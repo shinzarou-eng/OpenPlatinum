@@ -2495,7 +2495,7 @@ int main(int argc, char** argv) {
                                c2 = dp(206, iy + 8);
                         dld->AddTriangleFilled(c0, c1, c2, IM_COL32(232,40,40,255));
                     }
-                    dt_text(dld, yn[i], 208, iy, 0);
+                    dt_text(dld, yn[i], 208, iy, 7);   // blanc sur fenêtre sombre
                 }
             }
         }
@@ -3664,8 +3664,7 @@ int main(int argc, char** argv) {
                                    c2 = dp(207, iy + 8);
                             dl->AddTriangleFilled(c0, c1, c2, B_ORANGE);
                         }
-                        dt_text(dl, yn[i], 208, iy + 1,
-                            i == menu_sel ? 1 : 0);
+                        dt_text(dl, yn[i], 208, iy + 1, 7);   // blanc sur sombre
                     }
                 } else if (save_st == 1 || save_st == 2) {
                     save_t += ImGui::GetIO().DeltaTime;
