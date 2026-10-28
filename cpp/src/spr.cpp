@@ -415,25 +415,53 @@ Nfgr parse_nfgr(const Bytes& d0) {
     return f;
 }
 
-std::shared_ptr<Image> font_atlas(const Nfgr& f, RGBAf fg, RGBAf sh) {
+std::shared_ptr<Image> font_atlas(const Nfgr& f, RGBAf fg, RGBAf sh, int ss) {
     if (!f.nglyphs || !f.cellW || !f.cellH) return nullptr;
+    if (ss < 1) ss = 1;
     int cols = 16, rows = (f.nglyphs + cols - 1) / cols;
-    int w = cols * f.cellW, h = rows * f.cellH;
+    int w = cols * f.cellW * ss, h = rows * f.cellH * ss;
     auto im = std::make_shared<Image>(); im->w = w; im->h = h;
     im->px.assign((size_t)w * h * 4, 0);
-    auto put = [&](int px, int py, const RGBAf& c) {
-        size_t o = ((size_t)py * w + px) * 4;
-        im->px[o] = (uint8_t)c.r; im->px[o + 1] = (uint8_t)c.g;
-        im->px[o + 2] = (uint8_t)c.b; im->px[o + 3] = (uint8_t)c.a;
+    // couverture bilinéaire du masque binaire (v==want) -> bords lissés,
+    // resserrés par une courbe de contraste pour rester nets (pas flous)
+    auto cov = [&](const uint8_t* gp, int want, float sx, float sy) {
+        int x0 = (int)floorf(sx), y0 = (int)floorf(sy);
+        float fx = sx - x0, fy = sy - y0, a = 0.f;
+        for (int j = 0; j <= 1; j++) for (int i = 0; i <= 1; i++) {
+            int x = x0 + i, y = y0 + j;
+            float w_ = (i ? fx : 1.f - fx) * (j ? fy : 1.f - fy);
+            if (x >= 0 && x < f.cellW && y >= 0 && y < f.cellH &&
+                gp[y * f.cellW + x] == want)
+                a += w_;
+        }
+        // transition sur ~1/3 de px source : antialiased mais net
+        a = (a - 0.5f) * 2.6f + 0.5f;
+        return a < 0.f ? 0.f : (a > 1.f ? 1.f : a);
     };
     for (int g = 0; g < f.nglyphs; g++) {
-        int ox = (g % cols) * f.cellW, oy = (g / cols) * f.cellH;
+        int ox = (g % cols) * f.cellW * ss, oy = (g / cols) * f.cellH * ss;
         const uint8_t* gp = f.glyph_px(g);
-        for (int y = 0; y < f.cellH; y++)
-            for (int x = 0; x < f.cellW; x++) {
-                uint8_t v = gp[y * f.cellW + x];
-                if (v == 1) put(ox + x, oy + y, fg);
-                else if (v == 2) put(ox + x, oy + y, sh);
+        for (int y = 0; y < f.cellH * ss; y++)
+            for (int x = 0; x < f.cellW * ss; x++) {
+                float sx = (x + 0.5f) / ss - 0.5f,
+                      sy = (y + 0.5f) / ss - 0.5f;
+                float af = cov(gp, 1, sx, sy), as = cov(gp, 2, sx, sy);
+                if (af <= 0.f && as <= 0.f) continue;
+                // ombre sous le texte : sh derrière, fg dessus
+                float r = sh.r * as + fg.r * af * (1.f - as * 0.f);
+                float gg = sh.g * as + fg.g * af;
+                float b = sh.b * as + fg.b * af;
+                float a = fminf(1.f, as + af) * 255.f;
+                if (af > 0.f && as > 0.f) {          // chevauchement : fg l'emporte
+                    r = fg.r * af + sh.r * as * (1.f - af);
+                    gg = fg.g * af + sh.g * as * (1.f - af);
+                    b = fg.b * af + sh.b * as * (1.f - af);
+                }
+                size_t o = ((size_t)(oy + y) * w + ox + x) * 4;
+                im->px[o] = (uint8_t)fminf(255.f, r);
+                im->px[o + 1] = (uint8_t)fminf(255.f, gg);
+                im->px[o + 2] = (uint8_t)fminf(255.f, b);
+                im->px[o + 3] = (uint8_t)a;
             }
     }
     return im;

@@ -179,6 +179,7 @@ static const ImU32 DS_SH[8]  = {IM_COL32(160,160,168,255), IM_COL32(248,168,184,
     IM_COL32(248,184,192,255), IM_COL32(144,208,248,255), IM_COL32(0,0,0,255)};
 static spr::Nfgr g_dfont;
 static GLuint g_fatlas[8] = {};
+static const int g_fss = 4;                     // atlas suréchantillonné
 static bool g_font_try = false;
 static bool ds_font_ready(Nds& db) {
     if (!g_font_try) {
@@ -192,12 +193,13 @@ static bool ds_font_ready(Nds& db) {
 static GLuint ds_font_tex(int ci) {
     if (ci < 0 || ci > 7) ci = 0;
     if (!g_fatlas[ci]) {
+        // atlas ×g_fss : échantillonné LINEAR = lissé net (pas flou)
         auto im = spr::font_atlas(g_dfont,
             RGBAf{(float)(DS_FG[ci] & 255), (float)((DS_FG[ci] >> 8) & 255),
                   (float)((DS_FG[ci] >> 16) & 255), 255},
             RGBAf{(float)(DS_SH[ci] & 255), (float)((DS_SH[ci] >> 8) & 255),
-                  (float)((DS_SH[ci] >> 16) & 255), 255});
-        if (im) g_fatlas[ci] = ui_upload(*im, true);   // police lissée
+                  (float)((DS_SH[ci] >> 16) & 255), 255}, g_fss);
+        if (im) g_fatlas[ci] = ui_upload(*im, true);
     }
     return g_fatlas[ci];
 }
@@ -207,8 +209,8 @@ static float ds_text(ImDrawList* dl, const std::string& s, float x, float y,
     if (!g_dfont.nglyphs) { dl->AddText({x, y}, DS_FG[ci & 7], s.c_str()); return 0; }
     GLuint at = ds_font_tex(ci);
     float x0 = x;
-    int awt = 16 * g_dfont.cellW,
-        aht = ((g_dfont.nglyphs + 15) / 16) * g_dfont.cellH;
+    int awt = 16 * g_dfont.cellW * g_fss,
+        aht = ((g_dfont.nglyphs + 15) / 16) * g_dfont.cellH * g_fss;
     for (size_t k = 0; k < s.size(); ) {
         int cp = msg_next_utf8(s, k);
         if (cp < 0) break;
@@ -217,11 +219,11 @@ static float ds_text(ImDrawList* dl, const std::string& s, float x, float y,
         int w = g >= 0 ? g_dfont.glyph_w(g) : g_dfont.cellW;
         if (!w) w = g_dfont.cellW;
         if (g >= 0 && cp != ' ') {
-            float pi = 0.4f;   // retrait UV : évite le saignement LINEAR
-            float u0 = ((g % 16) * g_dfont.cellW + pi) / awt,
-                  v0 = ((g / 16) * g_dfont.cellH + pi) / aht,
-                  u1 = ((g % 16 + 1) * g_dfont.cellW - pi) / awt,
-                  v1 = ((g / 16 + 1) * g_dfont.cellH - pi) / aht;
+            float pi = 0.4f * g_fss;   // retrait UV : évite le saignement
+            float u0 = ((g % 16) * g_dfont.cellW * g_fss + pi) / awt,
+                  v0 = ((g / 16) * g_dfont.cellH * g_fss + pi) / aht,
+                  u1 = ((g % 16 + 1) * g_dfont.cellW * g_fss - pi) / awt,
+                  v1 = ((g / 16 + 1) * g_dfont.cellH * g_fss - pi) / aht;
             dl->AddImage((ImTextureID)(intptr_t)at, ImVec2(x, y),
                 ImVec2(x + g_dfont.cellW * scale, y + g_dfont.cellH * scale),
                 ImVec2(u0, v0), ImVec2(u1, v1));
@@ -2413,12 +2415,13 @@ int main(int argc, char** argv) {
                     int ci = colIdx(k0);
                     GLuint at = dsf ? ds_font_tex(ci) : 0;
                     if (at && g >= 0) {
-                        int awt = 16 * g_dfont.cellW,
-                            aht = ((g_dfont.nglyphs + 15) / 16) * g_dfont.cellH;
-                        float u0 = (float)((g % 16) * g_dfont.cellW) / awt,
-                              v0 = (float)((g / 16) * g_dfont.cellH) / aht,
-                              u1 = u0 + (float)g_dfont.cellW / awt,
-                              v1 = v0 + (float)g_dfont.cellH / aht;
+                        int awt = 16 * g_dfont.cellW * g_fss,
+                            aht = ((g_dfont.nglyphs + 15) / 16) *
+                                   g_dfont.cellH * g_fss;
+                        float u0 = (float)((g % 16) * g_dfont.cellW * g_fss) / awt,
+                              v0 = (float)((g / 16) * g_dfont.cellH * g_fss) / aht,
+                              u1 = u0 + (float)g_dfont.cellW * g_fss / awt,
+                              v1 = v0 + (float)g_dfont.cellH * g_fss / aht;
                         ImVec2 a = dp(x, y);
                         dld->AddImage((ImTextureID)(intptr_t)at,
                             a, ImVec2(a.x + g_dfont.cellW * g_uds,

@@ -66,6 +66,6 @@ struct Nfgr {
 Nfgr parse_nfgr(const Bytes& d);
 
 // atlas 16 glyphes/ligne, encres fg/ombre personnalisables
-std::shared_ptr<Image> font_atlas(const Nfgr& f, RGBAf fg, RGBAf sh);
+std::shared_ptr<Image> font_atlas(const Nfgr& f, RGBAf fg, RGBAf sh, int ss = 1);
 
 } // namespace spr
