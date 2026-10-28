@@ -482,6 +482,7 @@ std::shared_ptr<Image> decode_tex(const TexEnt& e, int pal_off, bool idx0) {
 std::shared_ptr<Image> decode_tex_raw(const Bytes& d, int t1, int c1, int c2,
         int fmt, int w, int h, int c0t, const Bytes& pd, int pal_blk,
         int pal_off, bool idx0) {
+    if (fmt == 0 || w <= 0 || h <= 0) return nullptr;   // TEXIMAGE_NONE : poly non texturé
     bool t0 = c0t || idx0;     // idx0 : decal mode -> index 0 transparent
     auto img = std::make_shared<Image>();
     img->create(w, h);
