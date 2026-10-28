@@ -825,8 +825,14 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         if (b.anim <= 0 || key == 'E') { b.st = Battle::CHOICE; b.sel = 0; b.msg.clear(); }
         break;
     case Battle::CHOICE: {                    // 0=Attaque 1=Sac / 2=Pokémon 3=Fuite
-        if (key == 'W' || key == 'S') b.sel ^= 2;
-        if (key == 'A' || key == 'D') b.sel ^= 1;
+        // layout DS : ATTAQUE large en haut, SAC/POKéMON/FUITE ligne du bas
+        if (key == 'W') b.sel = 0;
+        else if (key == 'S' && b.sel == 0) b.sel = 2;   // haut -> milieu du bas
+        else if (key == 'A' || key == 'D') {
+            int dd = key == 'D' ? 1 : -1;
+            if (b.sel == 0) b.sel = dd > 0 ? 3 : 1;     // coins du bas
+            else { int s = b.sel + dd; b.sel = s < 1 ? 1 : (s > 3 ? 3 : s); }
+        }
         if (key != 'E') break;
         if (b.sel == 0) { b.st = Battle::PICKMOVE; b.sel = 0; }
         else if (b.sel == 3) {
@@ -858,9 +864,13 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
             }
         }
         break; }
-    case Battle::PICKMOVE:
-        if (key == 'W' || key == 'A') b.sel = (b.sel + 3) % 4;
-        if (key == 'S' || key == 'D') b.sel = (b.sel + 1) % 4;
+    case Battle::PICKMOVE:                    // grille 2x2 comme sur DS
+        if (key == 'W' && b.sel >= 2) b.sel -= 2;
+        else if (key == 'S' && b.sel < 2 && b.sel + 2 < b.you().nmoves)
+            b.sel += 2;
+        else if (key == 'A' && (b.sel & 1)) b.sel -= 1;
+        else if (key == 'D' && !(b.sel & 1) && b.sel + 1 < b.you().nmoves)
+            b.sel += 1;
         if (key == 'Q') { b.st = Battle::CHOICE; b.sel = 0; break; }
         if (key == 'E') {
             if (b.sel < you.nmoves && you.pp[b.sel] > 0) {
