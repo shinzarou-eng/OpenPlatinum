@@ -1947,7 +1947,6 @@ int main(int argc, char** argv) {
         else if (ist == I_OFF) {
             rnd::set_clear(0.53f, 0.67f, 0.85f);   // ciel du monde
             if (world.starter_open())
-            if (world.starter_open())
                 world.draw_starter(asp);    // vraie scène 3D ev_pokeselect
             else world.draw(proj, sw, sh);
         }
