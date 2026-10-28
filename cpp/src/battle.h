@@ -72,11 +72,13 @@ public:
     int bg = 0;                       // BACKGROUND_* (décor pl_batt_bg)
     int terrain = 2;                  // TERRAIN_* (plateformes pl_batt_obj) : 2=herbe
     int tod = 0;                      // moment : 0 jour, 1 soir, 2 nuit
+    int foe_class = 0, foe_sprite = -1; // trdata : classe + sprite du dresseur adverse
     uint8_t me_part = 0;              // masque des Pokémon joueur ayant participé (XP)
     // capture (THROW) : ball = id objet, shakes restants, caught = capturé
     int turns = 0;                    // tours écoulés (Chrono Ball)
     int ball = 0, shakes = 0, shake_max = 0, tphase = 0;
     bool caught = false;
+    int caught_box = -1;                        // >=0 : envoyé en boîte PC n
     int screen[2] = {0, 0};           // Protection/Mur Lumière : tours restants
 
     const BatMon& you() const { return me[mi]; }
@@ -91,6 +93,8 @@ BatMon battle_make(Nds* db, int species, int level, const uint16_t* moves = null
     int iv = -1);
 // équipe dresseur (trdata/trpoke)
 std::vector<BatMon> battle_trainer_party(Nds* db, int tid);
+// en-tête trdata[tid] : retourne {classe, sprite} (-1,-1 si hors bornes)
+std::pair<int,int> battle_trainer_class_sprite(Nds* db, int tid);
 // info move (pl_waza_tbl, 16B)
 MoveInfo battle_move(Nds* db, int move);
 // nom FR d'un move (banque 647)

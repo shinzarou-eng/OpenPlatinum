@@ -220,9 +220,11 @@ const DsAudio::Wave& DsAudio::_wave(int warcIdx, int w) {
                     if (o + 12 <= e) {
                         int fmt = r8(f,sz,o);
                         wv.loop = r8(f,sz,o+1) != 0;
-                        wv.timer = r16(f,sz,o+2);
-                        int loopW = r16(f,sz,o+4);      // mots (4o) depuis début données
-                        int body = (int)r32(f,sz,o+8) * 4;
+                        // +2 = fréquence nominale (Hz), +4 = timer canal DS,
+                        // +6 = boucle en mots — le timer pilote le débit, pas rate
+                        wv.timer = r16(f,sz,o+4);
+                        int loopW = r16(f,sz,o+6);      // mots (4o) depuis début données
+                        int body = (int)(loopW + r32(f,sz,o+8)) * 4;  // +8 = long. boucle
                         if (o + 12 + body > e) body = (int)(e - o - 12);
                         const uint8_t* b = f + o + 12;
                         if (fmt == 0) {                 // PCM8 -> s16
@@ -511,8 +513,8 @@ void DsAudio::_command(Player& p, Track& t) {
     auto vlr  = [&] { return _varlen(t); };
 
     if (cmd < 0x80) {                                  // note
-        int vel = last(u8r);
-        int len = last(vlr);
+        int vel = u8r();                               // vélocité brute
+        int len = last(vlr);                           // durée (préfixe ok)
         if (!cond) return;
         int key = std::min(127, std::max(0, cmd + t.transpose));
         _noteOn(p, t, key, vel, len);
@@ -524,7 +526,7 @@ void DsAudio::_command(Player& p, Track& t) {
     case 0x80: { int v = last(vlr); if (cond) t.wait = v; return; }
     case 0x81: { int v = last(vlr); if (cond) t.prg = v; return; }
     case 0x93: {
-        int n_ = last(u8r); int at = last(u24r);
+        int n_ = u8r(); int at = u24r();
         if (cond && n_ > 0 && n_ < 16 && at < (int)t.d.n) {
             Track& nt = p.trk[n_];
             nt = Track{};
@@ -532,8 +534,8 @@ void DsAudio::_command(Player& p, Track& t) {
             nt.d = t.d; nt.pc = (size_t)at; nt.active = true;
         }
         return; }
-    case 0x94: { int at = last(u24r); if (cond) t.pc = (size_t)at; return; }
-    case 0x95: { int at = last(u24r);
+    case 0x94: { int at = u24r(); if (cond) t.pc = (size_t)at; return; }
+    case 0x95: { int at = u24r();
         if (cond && t.sp < 3) { t.stack[t.sp++] = { t.pc, -1 }; t.pc = (size_t)at; }
         return; }
     case 0xfd:
@@ -559,7 +561,7 @@ void DsAudio::_command(Player& p, Track& t) {
     case 0xe3: { int v = last(s16r); if (cond) t.sweepPitch = v; return; }
     }
     if (cmd >= 0xb0 && cmd <= 0xbd) {
-        int i = last(u8r);
+        int i = u8r();                                   // index brut
         int val = last(s16r);
         if (!cond) return;
         int16_t& vs = _var(p, t, i); int v = vs;
@@ -733,13 +735,14 @@ double DsAudio::_mixSample(Chan& c, double step) {
         c.pos = fmod(c.pos + step, 8.0);
         return s;
     }
-    // bruit LFSR 15 bits : feedback bit0^bit1 -> bit14
+    // bruit LFSR 15 bits : bit0 sort -> XOR 0x6000 (taps bits 13-14)
     double s = c.noiseOut;
     c.pos += step;
     while (c.pos >= 1.0) {
         c.pos -= 1.0;
-        int fb = (c.lfsr ^ (c.lfsr >> 1)) & 1;
-        c.lfsr = (c.lfsr >> 1) | (fb << 14);
+        int fb = c.lfsr & 1;
+        c.lfsr >>= 1;
+        if (fb) c.lfsr ^= 0x6000;
         c.noiseOut = fb ? -1 : 1;
     }
     return s;

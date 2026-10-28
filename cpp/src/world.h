@@ -84,6 +84,9 @@ public:
     // spans de couleur {FF00:n} de la ROM : (octet début dans _dialog, idx palette)
     const std::vector<std::pair<int,int>>& dialog_cols() const { return _dlg_cols; }
     size_t dlg_page_start() const { return _dlg_page; }
+    // mesure texte NFGR (injectée par main) : largeur px DS de s[b..e) —
+    // sert à paginer automatiquement les pages qui dépassent 2 lignes
+    std::function<float(const std::string&, size_t, size_t)> dlg_measure;
     bool yesno() const { return _yesno; }
     float banner_t() const { return _banner_t; }
     int bgm_seq(bool night) const { return night ? _mus_night : _mus_day; }
@@ -117,6 +120,14 @@ public:
         _vm.party.push_back(pm); }
     const std::string& species_name(int id); // nom FR (banque 412)
     const std::vector<ScriptVM::PartyMon>& party() const { return _vm.party; }
+    // stockage PC (script attend la fermeture de l'appli, comme sur DS)
+    bool pc_open() const { return _vm.state() == ScriptVM::PCBOX; }
+    int  pc_mode() const { return _vm.pc_mode; }
+    std::vector<ScriptVM::PartyMon>& pcbox() { return _vm.pcbox; }
+    void pc_close() { _vm.continue_after(ScriptVM::PCBOX); _vm.step(); }
+    void pc_move_party_to_box(int i, int box); // équipe -> boîte (1er slot libre)
+    void pc_move_box_to_party(int i);          // boîte -> équipe
+    static const char* box_name(int i);        // « BOITE 1 » .. « BOITE 18 »
     int pic_species() const { return _pic_species; }   // PokemonPicture actif
     // menu X / sac authentiques
     const std::string& msg(int bank, int idx);          // chaîne FR pl_msg[bank][idx]
@@ -176,6 +187,8 @@ public:
     uint32_t battle_bg_tex(int bg, int tod);             // décor combat 512x256 (pl_batt_bg)
     uint32_t battle_plat_tex(int ter, int side);         // plateforme terrain (pl_batt_obj)
     void battle_plat_size(int ter, int side, int* w, int* h);
+    uint32_t trainer_back_tex(int idx);                  // dos dresseur (trbgra)
+    uint32_t trainer_front_tex(int idx);                 // face dresseur (trfgra)
     std::vector<int> _bag_seq;                           // ordre d'obtention
     int _reg_item = 0;
     bool ui_frozen = false;                              // menu X : monde en pause (DS)
@@ -223,6 +236,7 @@ public:
     // ── menu debug : puissant ──
     float dbg_speed = 1.f;                 // multiplicateur de vitesse
     bool dbg_frame = false;                // pas-à-pas : simule 1 frame
+    int  _dbg_frames = 0;                  // frame boucle main (diag)
     bool noclip = false;                   // traverse murs + PNJ
     int  tile_beh(int tx, int tz) const { return _tile_beh(tx, tz); }
     bool tile_blocked(int tx, int tz) const {
@@ -390,6 +404,7 @@ private:
     size_t _dlg_page = 0;                   // début de la page courante (\n\n DS)
     std::vector<std::pair<int,int>> _dlg_cols;  // {FF00} -> (octet, palette)
     size_t dlg_page_end() const;            // fin de la page courante
+    size_t _dlg_wrap_end(size_t mend) const; // début de la 3e ligne (scroll)
     std::string _buf[16];                   // buffers {STRVAR} StringTemplate
     struct Fade { float t = -1, dur = 0; uint32_t color = 0; bool out = true; } _fade;
     bool _can_run = false;                  // chaussures de sport obtenues

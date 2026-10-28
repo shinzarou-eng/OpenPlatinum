@@ -157,6 +157,15 @@ std::vector<BatMon> battle_trainer_party(Nds* db, int tid) {
     return out;
 }
 
+// en-tête trdata[tid] : type@0, class@1, sprite@2 (trfgra), size@3
+std::pair<int,int> battle_trainer_class_sprite(Nds* db, int tid) {
+    auto td = db->narc(P_TRDATA);
+    if (!td || tid < 0 || tid >= td->count()) return {-1, -1};
+    const Bytes& h = td->member(tid);
+    if (h.size() < 4) return {-1, -1};
+    return {h[1], h[2]};
+}
+
 // ── table des types (sTypeMatchupMultipliers, battle_lib.c:2399) ──────────────
 // types : 0 Normal,1 Combat,2 Vol,3 Poison,4 Sol,5 Roche,6 Insecte,7 Spectre,
 // 8 Acier,9 ?,10 Feu,11 Eau,12 Plante,13 Électrik,14 Psy,15 Glace,16 Dragon,17 Ténèbres
@@ -891,10 +900,17 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
                 if (b.shakes > 0) { b.shakes--; b.anim = 0.55f; }
                 else {                          // fini : résultat
                     b.tphase = 2; b.anim = 0.3f;
-                    if (b.caught)
+                    if (b.caught) {
                         b.msg = tr("Youpi ! ", "Gotcha! ") +
                             battle_species_name(db, foe.species) +
                             tr(" a été capturé !", " was caught!");
+                        if (b.caught_box >= 0)
+                            b.msg += "\n\n" +
+                                battle_species_name(db, foe.species) +
+                                tr(" a été envoyé à la\nBoîte ",
+                                   " was sent to\nBox ") +
+                                std::to_string(b.caught_box + 1) + " !";
+                    }
                     else
                         b.msg = b.shake_max >= 3
                           ? tr("Zut ! Il était presque capturé !",

@@ -105,6 +105,10 @@ void World::_set_header(int header_id, bool init) {
         for (auto& b : _bgs)
             printf("    [bg] (%d,%d) scr=%d type=%d dir=%d\n",
                 b.x, b.z, b.script, b.type, b.dir);
+        for (int i = 0; i < (int)_objects.size(); i++)
+            printf("    [obj%d] gfx=%d scr=%d flag=%d x=%d z=%d\n",
+                i, _objects[i].gfx, _objects[i].script,
+                _objects[i].flag, _objects[i].x, _objects[i].z);
     }
 
     // état runtime des PNJ (position monde + direction)
@@ -624,6 +628,7 @@ void World::_inst_props(Cell* cp) {
                 g.alpha_cut = alpha;
                 g.blend = polyA < 31 ? std::max(polyA / 31.f, 0.03f) : 1.f;
                 /*DS attr*/ g.poly_id = (mg.matdef.poly >> 24) & 63; g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                /*DS attr*/ g.lit = mg.matdef.poly & 0xF;          // masque lampes (bits 0-3)
                 if (!t && (mg.matdef.dif & 0x8000))
                     g.tint = rgb555f(mg.matdef.dif & 0x7FFF);
                 if (flat) {
@@ -887,6 +892,7 @@ void World::_load_cell(int cx, int cy) {
             g.alpha_cut = alpha;
             g.blend = polyA < 31 ? std::max(polyA / 31.f, 0.03f) : 1.f;
                 /*DS attr*/ g.poly_id = (mg.matdef.poly >> 24) & 63; g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                /*DS attr*/ g.lit = mg.matdef.poly & 0xF;          // masque lampes (bits 0-3)
             if (!t && (mg.matdef.dif & 0x8000))          // fallback dif (shade…)
                 g.tint = rgb555f(mg.matdef.dif & 0x7FFF);
             if (flat) {
@@ -973,6 +979,22 @@ bool World::save(const char* path) const {
     // format v7 : progression par membre (PID, XP, EVs, amitié, moves)
     uint8_t nv7 = (uint8_t)_vm.party.size(); fwrite(&nv7, 1, 1, f);
     for (auto& m : _vm.party) {
+        fwrite(&m.pid, 4, 1, f); fwrite(&m.exp, 4, 1, f);
+        fwrite(m.evs, 1, 6, f);
+        int16_t fr = (int16_t)m.friendship; fwrite(&fr, 2, 1, f);
+        uint8_t nm = (uint8_t)m.nmoves; fwrite(&nm, 1, 1, f);
+        for (int k = 0; k < 4; k++) {
+            int16_t mv = (int16_t)m.moves[k], pp = (int16_t)m.pp[k];
+            fwrite(&mv, 2, 1, f); fwrite(&pp, 2, 1, f);
+        }
+    }
+    // format v8 : boîtes PC (espèce, niveau, PV, IV + progression v7 par membre)
+    uint16_t nb8 = (uint16_t)_vm.pcbox.size(); fwrite(&nb8, 2, 1, f);
+    for (auto& m : _vm.pcbox) {
+        int16_t s = (int16_t)m.species, l = (int16_t)m.level;
+        fwrite(&s, 2, 1, f); fwrite(&l, 2, 1, f);
+        int16_t hp = (int16_t)m.hp; uint8_t iv = (uint8_t)std::max(0, m.iv);
+        fwrite(&hp, 2, 1, f); fwrite(&iv, 1, 1, f);
         fwrite(&m.pid, 4, 1, f); fwrite(&m.exp, 4, 1, f);
         fwrite(m.evs, 1, 6, f);
         int16_t fr = (int16_t)m.friendship; fwrite(&fr, 2, 1, f);
@@ -1079,6 +1101,30 @@ bool World::load(const char* path) {
                     if (fread(&mv, 2, 1, f) != 1 || fread(&pp, 2, 1, f) != 1) break;
                     m.moves[k] = mv; m.pp[k] = pp;
                 }
+            }
+    }
+    {                                                     // v8 : boîtes PC
+        uint16_t nb8 = 0;
+        if (fread(&nb8, 2, 1, f) == 1)
+            for (int i = 0; i < nb8 && i < 540; i++) {
+                ScriptVM::PartyMon m;
+                int16_t s = 0, l = 1, hp = 0, fr = 70;
+                uint8_t iv = 0, nm = 0;
+                if (fread(&s, 2, 1, f) != 1 || fread(&l, 2, 1, f) != 1 ||
+                    fread(&hp, 2, 1, f) != 1 || fread(&iv, 1, 1, f) != 1 ||
+                    fread(&m.pid, 4, 1, f) != 1 ||
+                    fread(&m.exp, 4, 1, f) != 1 ||
+                    fread(m.evs, 1, 6, f) != 1 ||
+                    fread(&fr, 2, 1, f) != 1 ||
+                    fread(&nm, 1, 1, f) != 1) break;
+                m.species = s; m.level = l; m.hp = hp;
+                m.iv = iv; m.friendship = fr; m.nmoves = nm;
+                for (int k = 0; k < 4; k++) {
+                    int16_t mv = 0, pp = 0;
+                    if (fread(&mv, 2, 1, f) != 1 || fread(&pp, 2, 1, f) != 1) break;
+                    m.moves[k] = mv; m.pp[k] = pp;
+                }
+                _vm.pcbox[i] = m;
             }
     }
     fclose(f);

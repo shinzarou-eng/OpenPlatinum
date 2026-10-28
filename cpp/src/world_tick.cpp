@@ -564,8 +564,11 @@ void World::_btl_start(bool trainer, int tid, int sp, int lv) {
         _btl.me.push_back(m);
         if (_btl.mi < 0 && m.hp > 0) { _btl.mi = i; _btl.me_part |= 1 << i; }
     }
-    if (trainer) _btl.foes = battle_trainer_party(_db, tid);
-    else _btl.foes.push_back(battle_make(_db, sp, lv));
+    if (trainer) {
+        _btl.foes = battle_trainer_party(_db, tid);
+        auto cs = battle_trainer_class_sprite(_db, tid);
+        _btl.foe_class = cs.first; _btl.foe_sprite = cs.second;
+    } else _btl.foes.push_back(battle_make(_db, sp, lv));
     if (_btl.mi < 0 || _btl.foes.empty()) {       // pas d'équipe : victoire auto
         if (_vm.state() == ScriptVM::BATTLE) {
             _vm.battle_lost = 0;
@@ -616,6 +619,10 @@ void World::battle_throw(int item) {
     _btl.shake_max = s;
     _btl.shakes = s < 4 ? s : 3;                // capture : 3 secousses + clic
     _btl.caught = s == 4;
+    _btl.caught_box = -1;
+    if (_btl.caught && _vm.party.size() >= 6)   // équipe pleine -> boîte PC
+        for (int s = 0; s < 540; s++)
+            if (!_vm.pcbox[s].species) { _btl.caught_box = s / 30; break; }
 }
 
 void World::_btl_end() {
@@ -625,7 +632,7 @@ void World::_btl_end() {
         int w = _snd->seq_named(_btl.trainer ? "SEQ_WINTRAIN" : "SEQ_WINPOKE");
         if (w >= 0) { _snd->music(w); _bgm_victory = true; }
     }
-    if (_btl.caught && _vm.party.size() < 6) {    // capturé -> équipe
+    if (_btl.caught) {                            // capturé -> équipe ou PC
         ScriptVM::PartyMon pm;
         pm.species = _btl.foe().species; pm.level = _btl.foe().level;
         pm.hp = _btl.foe().hp; pm.iv = _btl.foe().iv;
@@ -634,7 +641,9 @@ void World::_btl_end() {
         for (int k = 0; k < 6; k++) pm.evs[k] = _btl.foe().evs[k];
         pm.nmoves = _btl.foe().nmoves;
         for (int k = 0; k < 4; k++) { pm.moves[k] = _btl.foe().moves[k]; pm.pp[k] = _btl.foe().pp[k]; }
-        _vm.party.push_back(pm);
+        if (_vm.party.size() < 6) _vm.party.push_back(pm);
+        else for (int s = 0; s < 540; s++)
+            if (!_vm.pcbox[s].species) { _vm.pcbox[s] = pm; break; }
     }
     // retour combat -> équipe : PV + progression (XP, niveau, moves, EVs)
     bool night = [] { time_t t = time(nullptr); int h = localtime(&t)->tm_hour;

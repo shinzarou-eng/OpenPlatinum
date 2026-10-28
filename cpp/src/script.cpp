@@ -52,8 +52,7 @@ void ScriptVM::start(int fn) {
 
 int ScriptVM::var(int v) const {
     if (v < 0x4000) return v;                     // constante (TryGetVar)
-    if (v >= 0x8000) {                            // work regs (0x800C = result)
-        if (v == 0x800C) return result;
+    if (v >= 0x8000) {                            // work regs (0x800C = var DS normale)
         auto it = _wvars.find(v);
         return it != _wvars.end() ? it->second : 0;
     }
@@ -63,7 +62,6 @@ int ScriptVM::var(int v) const {
 void ScriptVM::set_var(int v, int val) {
     if (v < 0x4000) return;                       // les constantes ne s'écrivent pas
     if (v >= 0x8000) {                            // work regs
-        if (v == 0x800C) { result = val; return; }
         _wvars[v] = val; return;
     }
     _vars[v] = val;
@@ -210,6 +208,10 @@ ScriptVM::St ScriptVM::step() {
             menu_items.clear();
             menu_dest = (int)_arg[4];                       // var de sélection
             menu_cancel = (int)_arg[3];                     // slot du bouton annuler
+            // DS field_menu.c : InitGlobalTextMenu (0x40) passe loader=NULL ->
+            // TEXT_BANK_MENU_ENTRIES (361) ; les variantes locales utilisent
+            // la banque du script.
+            menu_bank = (op == 0x0040 || op == 0x0044) ? 361 : -1;
         } break;
         case 0x0042:                                      // AddMenuEntryImm text,slot
             menu_items.push_back({(int)_arg[1], (int)_arg[0]}); break;
@@ -781,6 +783,26 @@ ScriptVM::St ScriptVM::step() {
         case 0x018F: break;                             // StoreSaveResult
         case 0x0128: set_var((int)_arg[0], 0); break;   // GetHoneyTreeStatus
         case 0x024B: break; case 0x024C: break;         // PC boot anims
+        case 0x024D: break;                             // ClosePcAnimation
+        case 0x00AB:                                    // OpenPcFunction (boxMode)
+            pc_mode = (int)_arg[0]; _st = PCBOX; break;
+        case 0x0251: {                                  // SetvarIdPokeBoxes type,dst
+            int res = -1;
+            for (int b = 0; b < 18 && res < 0; b++) {
+                bool full = true;
+                for (int s = b * 30; s < b * 30 + 30; s++)
+                    if (!pcbox[s].species) { full = false; break; }
+                if (!full) res = b;
+            }
+            set_var((int)_arg[1], res);
+        } break;
+        case 0x0252: {                                  // CheckBoxesNumber dst
+            int n = 0;
+            for (int b = 0; b < 18; b++)
+                for (int s = b * 30; s < b * 30 + 30; s++)
+                    if (pcbox[s].species) { n++; break; }
+            set_var((int)_arg[0], n);
+        } break;
         case 0x00A9: break;                             // OpenSealCapsuleEditor
         case 0x0205: break; case 0x020C: break;         // GeoNet / MessageFromTrainerType
         case 0x01AC: break;                             // HatchEgg (anim nd)

@@ -59,10 +59,10 @@ follows the ROM you load. The port's own interface supports French and English
 
 ## Status
 
-Playable from the opening in the bedroom through the Lake Verity scene and the first battles.
-The starter-selection scene renders the game's own 3D models with the real DS camera work.
-Beyond that, maps load and can be walked, but story progression past the starter isn't
-implemented yet.
+The field engine runs end-to-end: maps stream, NPCs wander and talk, signs read, warps work,
+wild and trainer battles play on the real DS two-screen layout, and the Pokémon Center PC
+opens the genuine storage application through the game's own script. Audio (SSEQ sequencer,
+SBNK/SWAR instruments) plays map music, battle themes, effects and cries.
 
 | Subsystem | State | Notes |
 |---|---|---|
@@ -72,7 +72,7 @@ implemented yet.
 | Collision and tile behaviors | ✅ Done | BDHC heights, attribute bits, ledges |
 | Player movement | ✅ Done | DS step machine: turn, walk, run, bump, jump timings |
 | Warps | ✅ Done | Behavior-gated like the DS: doors, mats, stairs, escalators, panels; arrival facing; `0x100` return warps |
-| Event script VM | ✅ Done | **372/372** opcodes in use by the game, Platinum widths, variable-arity commands |
+| Event script VM | ✅ Done | ~475 commands wired — the whole story path plus menus, PC, shop and field systems; optional-system commands (link, contests, underground, frontier) are detected, logged once and counted |
 | Objects / NPCs | ✅ Done | Placement, visibility flags, movement scripts, overworld sprites |
 | Coord / BG events | ✅ Done | Triggers, signs, hidden items |
 | Game text (FR/US) | ✅ Done | `pl_msg` decryption, Gen 4 charmap, `{tag}` substitution, text follows the loaded ROM |
@@ -81,13 +81,14 @@ implemented yet.
 | Pokémon sprites | ✅ Done | `pl_pokegra` decryption, both 80×80 animation frames ping-ponged like the DS |
 | Blackout / respawn | ✅ Done | `sSpawnLocations` table: last visited Pokémon Center remembered, healed on wake, fade + warp |
 | In-game options | ✅ Done | DS rows (text speed, battle anim/style, sound, buttons, frame type) + native graphics: language (FR/EN), fullscreen, resolution, texture filter, antialiasing (MSAA), anisotropy, VSync. Saved to `options.cfg` |
-| Save data | 🟡 Partial | Save file exists (map, position, party, respawn point) |
+| Save data | ✅ Done | Save v8: map, position, party, PC boxes (18×30, empty slots preserved), flags, respawn |
 | Wild encounters | 🟡 Partial | Real tables and rates — grass and Surf sections of `pl_enc_data` |
-| Battles | 🟡 Partial | Real stats, moves, type chart, damage formula, animated sprites, wild and trainer battles, ball capture (Gen 4 formula). Battle scenes use the ROM's `pl_batt_bg`/`pl_batt_obj` data per map. No XP or doubles yet |
+| Battles | 🟡 Partial | Real DS two-screen layout (scene + touch panel, side-by-side on wide windows), `pl_batt_bg`/`pl_batt_obj` per map, DS anchors for platforms, HP boxes and message, touch buttons decoded from ROM graphics, trainer sprites (`trfgra`/`trbgra`), wild and trainer battles, XP/level-up, Gen-4 capture including send-to-box when the party is full. No doubles yet |
+| Pokémon storage (PC) | ✅ Done | Real in-world PC: tile-behavior script → boot dialogue → owner menu → operations (deposit/withdraw/move/items), then the storage app; sparse 18×30 boxes, party restrictions kept |
 | Field moves | 🟡 Partial | Surf end-to-end: badge + party gating, mount/dismount, swim sprite, water encounters |
 | X menu / Bag / Party / Save | 🟡 Partial | Functional screens, item bag pockets, on-going polish |
-| Field texture loops (`fldtanime`) | ⬜ Todo | Animated water/flowers BTX0 per-area |
-| Audio (SDAT) | ⬜ Todo | |
+| Field texture loops (`fldtanime`) | ✅ Done | Per-area BTX0 loops: water, flowers, machines |
+| Audio (SDAT) | ✅ Done | SSEQ sequencer + SBNK/SWAR instruments: map BGM, battle themes, sound effects, cries, fanfares |
 | Pokédex, key items | ⬜ Todo | |
 
 ## Getting started
@@ -145,13 +146,15 @@ cpp\builddir\OpenPlatinum.exe --map 411 --pos 116,887    REM Twinleaf, in front 
  map_matrix ─► headers   zone_event                  scr_seq / pl_msg
      │                   (warps, objects,                  │
      ▼                    coords, bgs)                     ▼
- land_data ─► BDHC +         │                       ScriptVM (372 ops)
+ land_data ─► BDHC +         │                       ScriptVM
  NSBMD + attrs               ▼                             │
      │                  World (streaming, movement,  ◄─────┘
      ▼                   events, warps, camera)
  area_data / build_model     │
      │                       ▼
      └──────────────► Renderer (OpenGL) ◄── mmodel / pl_pokegra / ev_pokeselect
+
+ sound.sdat ──► Sdat (SSEQ/SBNK/SWAR) ──► mixer ──► SDL audio stream
 ```
 
 | File | Role |
@@ -168,6 +171,7 @@ cpp\builddir\OpenPlatinum.exe --map 411 --pos 116,887    REM Twinleaf, in front 
 | `world_tick.cpp` | Per-frame world update, encounters, battle start |
 | `world_internal.h` | Shared helpers (DS behavior/type enums, coords) |
 | `script.cpp` + `op_table.inc` | Event script VM and the Platinum command table |
+| `sdat.cpp` | SDAT audio: SSEQ sequence player, SBNK/SWAR instrument mixer |
 | `msg.cpp` | Text bank decryption and charmap |
 | `spr.cpp` | Overworld and Pokémon sprite decoding |
 | `battle.cpp` | Battle engine |
@@ -229,11 +233,17 @@ plus debug environment variables (`SCRTRACE`, `WARPDBG`, `WARPAUDIT`, `OBJDBG`, 
 - [x] Starter selection: real models, DS camera, animated Pokémon
 - [x] Options menu: DS rows + native graphics settings
 - [x] Blackout respawn at Pokémon Centers
-- [ ] Field texture loops (`fldtanime`): animated water, flowers
-- [ ] SDAT audio: SSEQ/SBNK/SWAR sequencer, field BGM, cries
+- [x] Field texture loops (`fldtanime`): animated water, flowers, machines
+- [x] SDAT audio: SSEQ/SBNK/SWAR sequencer, field BGM, battle themes, cries
+- [x] Pokémon storage: real in-world PC, sparse boxes, capture-to-box
+- [x] Battle presentation: DS two-screen layout, trainer sprites, touch buttons
 - [ ] Professor intro and new-game flow
 - [ ] Sandgem progression and beyond
-- [ ] Battle engine: XP and level-up, capture, items, trainer AI, double battles
+- [ ] Eggs and nicknames (`GiveEgg`, `ChoosePokeNick`)
+- [ ] Remaining field moves: Cut, Rock Smash, Strength, Waterfall, Rock Climb, Fly + town map
+- [ ] Double / tag battles
+- [ ] Hall of Fame and credits
+- [ ] Battle engine: items, trainer AI, doubles
 - [ ] Pokédex, key items, trading
 - [ ] Linux / macOS builds
 

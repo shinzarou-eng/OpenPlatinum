@@ -47,6 +47,7 @@ std::vector<GpuMesh>& World::_obj_3d(int gfx) {
         g.alpha_cut = alpha;
         g.blend = polyA < 31 ? std::max(polyA / 31.f, 0.03f) : 1.f;
                 /*DS attr*/ g.poly_id = (mg.matdef.poly >> 24) & 63; g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                /*DS attr*/ g.lit = mg.matdef.poly & 0xF;
         if (!t && (mg.matdef.dif & 0x8000))
             g.tint = rgb555f(mg.matdef.dif & 0x7FFF);
         out.push_back(g);
@@ -78,6 +79,7 @@ void World::_load_shadow() {
         g.alpha_cut = alpha;
         g.blend = polyA < 31 ? std::max(polyA / 31.f, 0.03f) : 1.f;
                 /*DS attr*/ g.poly_id = (mg.matdef.poly >> 24) & 63; g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                /*DS attr*/ g.lit = mg.matdef.poly & 0xF;
         _shadow_meshes.push_back(g);
     }
 }
@@ -491,52 +493,61 @@ Mat4 World::cam_proj(float asp) const {
     return Mat4::perspective(p.vfov * 2.f * 0.01745329252f, asp, p.zn, p.zf);
 }
 
-// arealight.narc : ASCII CR-séparé — par gabarit : 1 ligne endTime (sec/2),
-// 4 lignes lampe (valid,r,g,b,x,y,z — dir fx16), 4 lignes diff/amb/spec/emis,
-// 1 ligne séparatrice ; fini par "EOF"
+// arealight.narc : ASCII CR-séparé — par gabarit : 1 ligne endTime (sec/2)
+// puis 4 lignes lampe (valid,r,g,b,x,y,z — dir fx16), 4 lignes diff/amb/
+// spec/emis, 1 ligne séparatrice ; le tout premier bloc n'a pas d'endTime
+// (implicite 0) ; terminé par "EOF" (lighting_set_*.json de la decomp)
 void World::_alt_load(int member) {
     _alt.clear();
     auto an = _db->narc(Nds::P_AREALIGHT);
     if (!an || member >= an->count()) return;
     const Bytes& d = an->member(member);
     std::string s((const char*)d.data(), d.size());
-    auto next = [&](std::string& line) -> bool {
-        size_t p = s.find('\r');
-        line = s.substr(0, p == std::string::npos ? s.size() : p);
-        if (!line.empty() && line[0] == '\n') line.erase(0, 1);
-        if (p == std::string::npos) { s.clear(); return false; }
-        s.erase(0, p + 1); return true;
+    std::vector<std::string> lines;
+    for (size_t b = 0; b <= s.size();) {
+        size_t p = s.find('\r', b);
+        std::string l = s.substr(b, p == std::string::npos ? s.size() - b : p - b);
+        if (!l.empty() && l[0] == '\n') l.erase(0, 1);
+        while (!l.empty() && (l.back() == '\n' || l.back() == ' ')) l.pop_back();
+        if (l.rfind("EOF", 0) == 0) break;
+        lines.push_back(l);
+        if (p == std::string::npos) break;
+        b = p + 1;
+    }
+    auto is_end = [](const std::string& l) {        // ligne "endTime" = entier seul
+        if (l.empty() || !isdigit((unsigned char)l[0])) return false;
+        for (char c : l) if (c != ',' && !isdigit((unsigned char)c) && c != ' ') return false;
+        return true;
     };
     auto ints = [](const std::string& l, std::vector<int>& v) {
         v.clear(); size_t b = 0;
         while (b <= l.size()) {
             size_t c = l.find(',', b);
-            std::string w = l.substr(b, c == std::string::npos ? c : c - b);
-            v.push_back(atoi(w.c_str()));
+            v.push_back(atoi(l.substr(b, c == std::string::npos ? c : c - b).c_str()));
             if (c == std::string::npos) break; b = c + 1;
         }
     };
-    std::string l; std::vector<int> v;
-    while (next(l)) {
-        if (l.rfind("EOF", 0) == 0) break;
-        Alt a; ints(l, v); a.end = v.empty() ? 0 : v[0];
-        for (int i = 0; i < 4; i++) {
-            if (!next(l)) return;
-            ints(l, v);
-            if (v.size() >= 7 && v[0] == 1) {
-                int k = a.L.n++;
+    std::vector<int> v;
+    size_t i = 0;
+    int pend = 0;                                    // 1er bloc : endTime implicite 0
+    while (i < lines.size()) {
+        if (is_end(lines[i])) { ints(lines[i], v); pend = v.empty() ? 0 : v[0]; i++; }
+        if (i + 8 >= lines.size()) break;
+        Alt a; a.end = pend; pend = 0; a.L.n = 4;
+        for (int k = 0; k < 4; k++) {                // lampes : index = bit du masque
+            ints(lines[i + k], v);                   // (invalide -> couleur 0, pas de contribution)
+            if (v.size() >= 7 && v[0] == 1)
                 for (int c = 0; c < 3; c++) {
                     a.L.col[k][c] = v[1 + c] / 31.f;
                     a.L.dir[k][c] = std::max(-1.f, std::min(1.f, v[4 + c] / 4096.f));
                 }
-            }
         }
-        auto rgb3 = [&](float* o) {
-            if (!next(l)) return; ints(l, v);
-            for (int c = 0; c < 3 && c + 0 < (int)v.size(); c++) o[c] = v[c] / 31.f;
+        auto rgb3 = [&](int k, float* o) {
+            ints(lines[i + 4 + k], v);
+            for (int c = 0; c < 3 && c < (int)v.size(); c++) o[c] = v[c] / 31.f;
         };
-        rgb3(a.L.dif); rgb3(a.L.amb); rgb3(a.L.spc); rgb3(a.L.emi);
-        next(l);                                    // séparateur
+        rgb3(0, a.L.dif); rgb3(1, a.L.amb); rgb3(2, a.L.spc); rgb3(3, a.L.emi);
+        i += 9;                                      // +1 ligne séparatrice
         _alt.push_back(a);
     }
 }
@@ -756,6 +767,7 @@ void World::draw_starter(float asp) {
                     g.alpha_cut = alpha;
                     g.blend = polyA < 31 ? std::max(polyA/31.f, 0.03f) : 1.f;
                     /*DS attr*/ g.poly_id = (mg.matdef.poly >> 24) & 63; g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                    /*DS attr*/ g.lit = mg.matdef.poly & 0xF;
                     if (!t && (mg.matdef.dif & 0x8000))
                         g.tint = rgb555f(mg.matdef.dif & 0x7FFF);
                     pi.meshes.push_back(g);

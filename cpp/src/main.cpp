@@ -227,6 +227,20 @@ static float dt_text(ImDrawList* dl, const std::string& s, float x, float y,
 }
 // largeur en pixels DS (échelle native)
 static float dt_text_w(const std::string& s) { return ds_text_w(s, 1.f); }
+// mesure d'une plage s[b..e) — identique au linew du wrap de la boîte
+// message (espaces via le glyphe 0, glyphes inconnus = 8 px)
+static float dlg_linew(const std::string& s, size_t b, size_t e) {
+    float w = 0;
+    for (size_t k = b; k < e; ) {
+        int cp = msg_next_utf8(s, k);
+        if (cp < 0) break;
+        int g = cp == ' ' ? 0 : msg_char_code_of((char32_t)cp) - 1;
+        if (!g_dfont.nglyphs || g < 0) { w += 8.f; continue; }
+        int gw = g_dfont.glyph_w(g);
+        w += gw ? gw : g_dfont.cellW;
+    }
+    return w;
+}
 // pages du clavier de nommage DS : 5 lignes de 13 touches (espace = vide)
 static const char* KB_ROWS[3][5] = {
     {   // page 0 : MAJUSCULES
@@ -1011,6 +1025,7 @@ int main(int argc, char** argv) {
     World world;
     world.init(&db);
     world.set_audio(&snd);
+    world.dlg_measure = dlg_linew;          // pagination 2 lignes du dialogue
     bool dbg_win = false;                       // F1 / --dbg
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--flat")) world.flat = true;
@@ -1078,10 +1093,28 @@ int main(int argc, char** argv) {
     bool iball_bad = false;                 // mauvais bouton sur la balle
     float post_fade = 0;                    // fondu entrant après la chambre
     ImVec4 ball_rc = {0,0,0,0};             // rect écran de la balle (I_BALL)
+    bool idlg_plain = false;                // bloc texte DS (pas de cadre)
+    float idlg_px = 0, idlg_py = 0;         // origine du bloc en px DS
     auto iset_msg = [&](int id) {           // message -> pages (séparées \n\n)
         icur = id;
         std::string s = world.msg_fmt(389, id);
         ipages.clear(); ipage = 0;
+        // DisplayTextBlock DS : les aides Contrôles (2-5) et Aventure
+        // (10-15) s'impriment en texte libre sur le fond, bloc entier
+        // instantané, \n\n = ligne vide ; pas de fenêtre encadrée
+        idlg_plain = (id >= 2 && id <= 5) || (id >= 10 && id <= 15);
+        if (idlg_plain) {
+            int nl = 1;
+            for (char c : s) if (c == '\n') nl++;
+            idlg_px = id <= 5 ? 64.f : 32.f;   // tilemapLeft 8 / 4
+            float top = id == 2 ? 3.f : id == 3 ? 7.f
+                      : id == 4 ? 10.f - nl : id == 5 ? 9.f - nl
+                      : 12.f - nl;             // centrage vertical DS
+            idlg_py = top * 8.f;
+            ipages.push_back(s);
+            idlg = s; ichars = (float)s.size();    // TEXT_SPEED_INSTANT
+            return;
+        }
         size_t p = 0;
         while (true) {
             size_t q = s.find("\n\n", p);
@@ -1197,15 +1230,20 @@ int main(int argc, char** argv) {
     struct TpEv { int f, x, z; };           // téléport debug (--tp F,X,Z)
     std::vector<TpEv> tps;
     struct WildEv { int f, sp, lv; };       // combat forcé (--wild F,sp,lv)
+    struct TrEv { int f, tid; };            // combat dresseur (--trainer F,tid)
     std::vector<WildEv> wilds;
+    std::vector<TrEv> trs;
     std::vector<std::pair<int, SDL_Keycode>> keyev;   // --keys F:c,...
     int starter_sel = 0;                    // curseur écran starter
     int starter_st = 0;                     // 0 = choix balle, 1 = confirmation
     bool starter_yn = false;                // curseur oui/non confirm
     int starter_at = -1;                    // --starter F : ouverture test
     // ── menu X authentique DS ─────────────────────────────────────────────
-    enum UISt { UI_NONE, UI_XMENU, UI_BAG, UI_PARTY, UI_SAVE, UI_OPTIONS, UI_CARD };
+    enum UISt { UI_NONE, UI_XMENU, UI_BAG, UI_PARTY, UI_SAVE, UI_OPTIONS, UI_CARD,
+                UI_PC };
     int ui_st = UI_NONE, menu_sel = 0, save_st = 0, bag_pocket = 0;
+    int pc_box = 0, pc_col = 0, pc_row = 0, pc_side = 0, pc_psel = 0;
+    int menu_msel = 0;
     // sac DS : sous-états (curseur / menu actions / cible équipe / jeter / oui-non)
     int bag_sel = 0, bag_scroll = 0, bag_act = -1, bag_asel = 0;
     int bag_party = -1, bag_psel = 0, bag_toss = -1, bag_tossn = 1;
@@ -1253,6 +1291,15 @@ int main(int argc, char** argv) {
             };
             for (auto& f : FILL) if (f[1]) world.vm().bag_add(f[0], f[1]);
         }
+        if (!strcmp(argv[i], "--boxmon") && i + 1 < argc) { // test : mon en boîte
+            int sp, lv, sl = 0;
+            if (sscanf(argv[i + 1], "%d,%d,%d", &sp, &lv, &sl) >= 2 && sl < 540) {
+                ScriptVM::PartyMon pm; pm.species = sp; pm.level = lv;
+                pm.hp = world.mon_maxhp(sp, lv);
+                world.pcbox()[sl] = pm;
+                world.vm().pc_mode = 2;          // mode libre pour le test
+            }
+        }
         if (!strcmp(argv[i], "--xmenu") && i + 1 < argc)
             xmenu_at = atoi(argv[i + 1]);
         if (!strcmp(argv[i], "--ui") && i + 1 < argc) {
@@ -1261,6 +1308,7 @@ int main(int argc, char** argv) {
             ui_arg_state = !strcmp(u, "party") ? UI_PARTY
                 : !strcmp(u, "save") ? UI_SAVE : !strcmp(u, "options") ? UI_OPTIONS
                 : !strcmp(u, "card") ? UI_CARD
+                : !strcmp(u, "pc") ? UI_PC
                 : !strncmp(u, "bag", 3) ? UI_BAG : UI_XMENU;
             if (!strncmp(u, "bag", 3) && isdigit(u[3]))   // --ui bagN : poche N
                 bag_pocket = u[3] - '0';
@@ -1282,6 +1330,11 @@ int main(int argc, char** argv) {
             int f, sp, lv;
             if (sscanf(argv[i + 1], "%d,%d,%d", &f, &sp, &lv) == 3)
                 wilds.push_back({f, sp, lv});
+        }
+        if (!strcmp(argv[i], "--trainer") && i + 1 < argc) { // --trainer F,tid
+            int f, tid;
+            if (sscanf(argv[i + 1], "%d,%d", &f, &tid) == 2)
+                trs.push_back({f, tid});
         }
         if (!strcmp(argv[i], "--starter") && i + 1 < argc)  // écran starter test
             starter_at = atoi(argv[i + 1]);
@@ -1558,8 +1611,27 @@ int main(int argc, char** argv) {
                         else if (starter_yn) {
                             world.starter_pick(starter_sel); starter_st = 0;
                         } else starter_st = 0;
+                    } else if (world.menu_open()) {
+                        auto& it3 = world.menu_items();
+                        if (menu_msel < (int)it3.size()) {
+                            if (world.verbose)
+                                printf("[pick] slot=%d\n", it3[menu_msel].first);
+                            world.menu_pick(it3[menu_msel].first);
+                        }
                     } else if (!ImGui::GetIO().WantCaptureKeyboard)
                         world.action();
+                }
+                // menu multi : curseur haut/bas (même chemin que les clics)
+                if (world.menu_open()) {
+                    auto& it3 = world.menu_items();
+                    int nm3 = (int)it3.size();
+                    if (nm3 && (ev.key.key == SDLK_W || ev.key.key == SDLK_UP))
+                        menu_msel = (menu_msel + nm3 - 1) % nm3;
+                    if (nm3 && (ev.key.key == SDLK_S || ev.key.key == SDLK_DOWN))
+                        menu_msel = (menu_msel + 1) % nm3;
+                    // bouton B = annuler -> slot menu_cancel (DS canExitWithB)
+                    if (ev.key.key == SDLK_Q || ev.key.key == SDLK_BACKSPACE)
+                        world.menu_pick(world.vm().menu_cancel);
                 }
                 if (world.starter_open() && starter_st == 0) {  // curseur <- ->
                     if (ev.key.key == SDLK_A || ev.key.key == SDLK_LEFT)
@@ -1727,6 +1799,50 @@ int main(int argc, char** argv) {
                         if (bk || key == SDLK_X) ui_st = UI_XMENU;
                     }
                     world.ui_frozen = true;
+                } else if (ui_st == UI_PC) {
+                    // stockage PC : curseur boîte 6x5 / colonne équipe
+                    int key = ev.key.key;
+                    auto& box = world.pcbox();
+                    auto& pty = world.party();
+                    int mode = world.pc_mode();   // 0 dépôt 1 retrait 2+ libre
+                    if (pc_side == 0) {
+                        if (key == SDLK_LEFT || key == SDLK_A) {
+                            if (--pc_col < 0) { pc_col = 5;
+                                pc_box = (pc_box + 17) % 18; }
+                        }
+                        if (key == SDLK_RIGHT || key == SDLK_D) {
+                            if (++pc_col > 5) { pc_col = 0;
+                                pc_box = (pc_box + 1) % 18; }
+                        }
+                        if (key == SDLK_UP || key == SDLK_W)
+                            pc_row = (pc_row + 4) % 5;
+                        if (key == SDLK_DOWN || key == SDLK_S)
+                            pc_row = (pc_row + 1) % 5;
+                        if (key == SDLK_TAB) pc_side = 1;
+                    } else {
+                        if (key == SDLK_UP || key == SDLK_W)
+                            pc_psel = (pc_psel + 5) % 6;
+                        if (key == SDLK_DOWN || key == SDLK_S)
+                            pc_psel = (pc_psel + 1) % 6;
+                        if (key == SDLK_LEFT || key == SDLK_A ||
+                            key == SDLK_TAB) pc_side = 0;
+                    }
+                    if (key == SDLK_E || key == SDLK_RETURN) {
+                        if (pc_side == 0 && mode != 0) {
+                            int i = pc_box * 30 + pc_row * 6 + pc_col;
+                            if (i < 540 && box[i].species)
+                                world.pc_move_box_to_party(i);
+                        } else if (pc_side == 1 && mode != 1) {
+                            if (pc_psel < (int)pty.size())
+                                world.pc_move_party_to_box(pc_psel, pc_box);
+                        }
+                    }
+                    if (key == SDLK_Q || key == SDLK_BACKSPACE ||
+                        key == SDLK_X) {
+                        ui_st = UI_NONE;
+                        world.pc_close();
+                        world.ui_frozen = false;
+                    }
                 } else if (ui_st != UI_NONE) {
                     // nb de lignes navigables : options = 11, oui/non sauvegarde
                     // = 2, sinon taille du menu X
@@ -1846,6 +1962,7 @@ int main(int argc, char** argv) {
                 else if (w.d == 1) iz -= 1;
                 else if (w.d == 2) ix -= 1;
                 else ix += 1;
+                if (world.verbose) printf("[walkinj] f=%d iz=%.0f\n", frames, iz);
             }
         // bouton B DS = course (après les chaussures de sport)
         world.run_held = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
@@ -1922,6 +2039,8 @@ int main(int argc, char** argv) {
         // --wild F,sp,lv : force un combat sauvage à la frame F (test)
         for (auto& wld : wilds)
             if (frames == wld.f) world.force_wild(wld.sp, wld.lv);
+        for (auto& tev : trs)
+            if (frames == tev.f) world.force_trainer(tev.tid);
         if (starter_at >= 0 && frames == starter_at)
             world.force_starter();          // test écran starter DS
 
@@ -2211,8 +2330,10 @@ int main(int argc, char** argv) {
             }
             // portrait Sorbier : monte depuis le bas + bouge en parlant.
             // menu aide affiché à droite (tuile 17) -> prof décalé à gauche
-            // comme sur DS (sinon la fenêtre le couvre)
-            if (ist == I_SEQ || ist == I_HELP || ist == I_BALL) {
+            // comme sur DS (sinon la fenêtre le couvre). Pendant les blocs
+            // d'info, la couche du prof est masquée (Bg_ToggleLayer FALSE).
+            if ((ist == I_SEQ || ist == I_HELP || ist == I_BALL) &&
+                !idlg_plain) {
                 float rise = fminf(1.f, it / 0.45f);
                 float off = (1.f - rise) * (1.f - rise) * top_h * 0.5f;
                 bool speaking = !idlg.empty() && ichars < (float)idlg.size();
@@ -2230,7 +2351,26 @@ int main(int argc, char** argv) {
             // Le canvas 256x192 couvre l'écran du haut (top_h).
             bool show_box = !idlg.empty() && ist != I_GF && ist != I_TITLE &&
                             ist != I_FADE;
-            if (show_box) {
+            // blocs d'info : texte libre blanc sur le fond (DisplayTextBlock)
+            if (idlg_plain && !idlg.empty() && ist != I_GF &&
+                ist != I_TITLE && ist != I_FADE) {
+                g_uds = top_h / 192.f;
+                g_udx = (io.x - 256.f * g_uds) * 0.5f;
+                ds_font_ready(db);
+                float lh = g_dfont.nglyphs ? (float)g_dfont.cellH : 16.f;
+                float ly = idlg_py;
+                for (size_t a = 0; a < idlg.size();) {
+                    size_t nl = idlg.find('\n', a);
+                    dt_text(bg, idlg.substr(a,
+                        nl == std::string::npos ? nl : nl - a),
+                        idlg_px, ly, 5);                    // blanc système
+                    ly += lh;
+                    if (nl == std::string::npos) break;
+                    a = nl + 1;
+                }
+                dt_scrollcur(bg, db, 232 - 16 - 4, 184 - 16);
+            }
+            if (show_box && !idlg_plain) {
                 g_uds = top_h / 192.f;
                 g_udx = (io.x - 256.f * g_uds) * 0.5f;
                 ds_font_ready(db);
@@ -2499,7 +2639,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        // ── combat : fond ciel/herbe + panneaux verre sombre (mockup) ────
+        // ── combat : panorama pl_batt_bg + plateformes pl_batt_obj (ROM) ────
         if (world.battle().active) {
             auto& bt = world.battle();
             ImVec2 io = ImGui::GetIO().DisplaySize;
@@ -2557,64 +2697,100 @@ int main(int argc, char** argv) {
                 GLuint tt = bt.trans_tex; glDeleteTextures(1, &tt);
                 bt.trans_tex = 0;
             }
-            // décor ROM : panorama 512x256 (pl_batt_bg), vue centrée 256x192
-            float bgh = io.y * 0.72f;                 // hauteur de la scène
-            float s2 = bgh / 192.f;                   // px DS -> px écran
+            // mise en page DS : fenêtre large -> écrans côte à côte comme un
+            // émulateur (scène à gauche, tactile à droite) ; fenêtre étroite
+            // -> empilés. Les positions de la décomp (battle_display.c /
+            // healthbox.c) restent valables à toute taille de fenêtre.
+            // le layout qui agrandit le plus les écrans gagne : côte à côte
+            // en paysage (512x192), empilé en portrait (256x384)
+            float uds_sbs = std::min(io.x / 512.f, io.y / 192.f);
+            float uds_stk = std::min(io.x / 256.f, io.y / 384.f);
+            bool sbs = uds_sbs >= uds_stk;
+            float uds = sbs ? uds_sbs : uds_stk;
+            float udx = (io.x - (sbs ? 512.f : 256.f) * uds) * 0.5f;
+            float udy = sbs ? (io.y - 192.f * uds) * 0.5f : 0.f;
+            auto tp = [&](float x, float y) {           // écran scène
+                return ImVec2(udx + x * uds, udy + y * uds); };
+            auto dn = [&](float x, float y) {           // écran tactile
+                return sbs ? ImVec2(udx + (256.f + x) * uds, udy + y * uds)
+                           : ImVec2(udx + x * uds, (192.f + y) * uds); };
+            dl->AddRectFilled({0, 0}, io, B_NAVY);      // pillarbox
+            dl->PushClipRect(tp(0, 0), tp(256, 192), true);   // scène = écran 1
+            // décor ROM : panorama 512x256 (pl_batt_bg), fenêtre DS 256x192
             uint32_t bgt = world.battle_bg_tex(bt.bg, bt.tod);
             if (bgt) {
-                dl->AddImage((ImTextureID)(intptr_t)bgt, {0, 0},
-                    {io.x, bgh}, {0.25f, 0.f}, {0.75f, 0.75f});
+                dl->AddImage((ImTextureID)(intptr_t)bgt, tp(0, 0), tp(256, 192),
+                    {0.25f, 0.f}, {0.75f, 0.75f});
             } else {  // repli : dégradé si la ROM n'a pas l'archive
-                dl->AddRectFilledMultiColor({0, 0}, {io.x, bgh},
+                dl->AddRectFilledMultiColor(tp(0, 0), tp(256, 192),
                     IM_COL32(185, 220, 242, 255), IM_COL32(185, 220, 242, 255),
                     IM_COL32(143, 188, 94, 255), IM_COL32(143, 188, 94, 255));
             }
-            dl->AddRectFilled({0, bgh}, io, B_NAVY);
-            // plateformes de terrain (pl_batt_obj) : ennemi haut-droite,
-            // joueur bas-gauche — les sprites des Pokémon se posent dessus
+            // plateformes de terrain (pl_batt_obj) aux positions DS :
+            // ennemi centrée en (192,88), joueur en (64,136)
             int pw = 0, ph = 0;
             world.battle_plat_size(bt.terrain, 1, &pw, &ph);
             uint32_t tpe = world.battle_plat_tex(bt.terrain, 1);
             uint32_t tpp = world.battle_plat_tex(bt.terrain, 0);
-            float epw = pw ? pw * s2 : 129 * s2, eph = ph ? ph * s2 : 65 * s2;
-            float ppw = 257 * s2, pph = 33 * s2;
+            float epw = pw ? pw * uds : 129 * uds, eph = ph ? ph * uds : 65 * uds;
             world.battle_plat_size(bt.terrain, 0, &pw, &ph);
-            if (pw) { ppw = pw * s2; pph = ph * s2; }
-            ImVec2 epc = {io.x * 0.66f, bgh * 0.44f};    // centre plat. ennemie
-            ImVec2 ppc = {io.x * 0.30f, bgh * 0.93f};    // centre plat. joueur
-            // intro DS : sprites+plateformes glissent depuis les bords (±272px
+            float ppw = pw ? pw * uds : 257 * uds, pph = ph ? ph * uds : 33 * uds;
+            ImVec2 epc = tp(192, 88), ppc = tp(64, 136);
+            // intro DS : plateformes+dresseurs glissent depuis les bords (±272px
             // sur 0.8s), puis les boîtes PV glissent (160px à 48px/tick)
             float slide = bt.st == Battle::INTRO
                 ? std::min(1.f, (1.2f - bt.anim) / 0.8f) : 1.f;
             float hbox_sl = bt.st == Battle::INTRO
                 ? std::max(0.f, 1.f - (1.2f - bt.anim - 0.8f) / 0.15f) : 1.f;
-            float esl = (1.f - slide) * 272.f * s2;    // ennemi depuis la droite
-            float psl = (1.f - slide) * 272.f * s2;    // joueur depuis la gauche
-            float roff = 0.f;
+            float esl = (1.f - slide) * 272.f * uds;   // ennemi depuis la droite
+            float psl = (1.f - slide) * 272.f * uds;   // joueur depuis la gauche
             if (tpp) dl->AddImage((ImTextureID)(intptr_t)tpp,
                 {ppc.x - ppw * 0.5f - psl, ppc.y - pph * 0.5f},
                 {ppc.x + ppw * 0.5f - psl, ppc.y + pph * 0.5f});
             if (tpe) dl->AddImage((ImTextureID)(intptr_t)tpe,
-                {epc.x - epw * 0.5f + esl, epc.y - eph * 0.5f + roff},
-                {epc.x + epw * 0.5f + esl, epc.y + eph * 0.5f + roff});
-            // sprites ROM : ennemi face avant, joueur dos (anim 2 frames)
+                {epc.x - epw * 0.5f + esl, epc.y - eph * 0.5f},
+                {epc.x + epw * 0.5f + esl, epc.y + eph * 0.5f});
+            // dresseurs pendant l'intro : le joueur (dos, trbgra) entre par la
+            // gauche, l'adversaire (face, trfgra) par la droite en combat de
+            // dresseur ; ils ressortent quand les Pokémon apparaissent
+            bool mons_in = bt.st != Battle::INTRO || bt.anim <= 0.5f;
+            float tr_out = bt.st == Battle::INTRO && bt.anim <= 0.5f
+                ? std::min(1.f, (0.5f - bt.anim) / 0.25f) : 0.f;
+            if (bt.st == Battle::INTRO && !mons_in) {
+                // les dresseurs glissent avec leur plateforme (±272px DS),
+                // puis ressortent quand le Pokémon apparaît (tr_out)
+                float tx = -psl / uds - tr_out * 80.f;
+                uint32_t tbk = world.trainer_back_tex(world.gender() ? 1 : 0);
+                if (tbk) dl->AddImage((ImTextureID)(intptr_t)tbk,
+                    tp(24 + tx, 72), tp(104 + tx, 152));
+                if (bt.trainer && bt.foe_sprite >= 0) {
+                    float fx = esl / uds + tr_out * 80.f;
+                    uint32_t tfr = world.trainer_front_tex(bt.foe_sprite);
+                    if (tfr) dl->AddImage((ImTextureID)(intptr_t)tfr,
+                        tp(152 + fx, 10), tp(232 + fx, 90));
+                }
+            }
+            // sprites ROM : ennemi face avant, joueur dos (anim 2 frames),
+            // centrés sur les points de combat DS (192,50) / (64,112)
             int afr = (int)(ImGui::GetTime() * 2.5) & 1;
-            uint32_t tf = world.poke_tex(bt.foe().species, 0, afr);
-            uint32_t tb = world.poke_tex(bt.you().species, 1, afr);
-            float fs = 82.f * s2, ps = 90.f * s2;
-            // pieds = ligne opaque basse du sprite posée sur la plateforme
-            float ffoot = epc.y - eph * 0.12f + roff;
-            float pfoot = ppc.y - pph * 0.42f;
+            // sauvage : l'ennemi glisse avec sa plateforme ; dresseur : les
+            // Pokémon n'apparaissent qu'après la sortie des dresseurs
+            uint32_t tf = (mons_in || !bt.trainer)
+                ? world.poke_tex(bt.foe().species, 0, afr) : 0;
+            uint32_t tb = mons_in ? world.poke_tex(bt.you().species, 1, afr) : 0;
+            float fs = 80.f * uds;
+            ImVec2 fctr = tp(192, 50), pctr = tp(64, 112);
             int fb = world.poke_feet(bt.foe().species, 0, afr);
             int pb = world.poke_feet(bt.you().species, 1, afr);
             // anims combat : propulsion attaquant (va-et-vient vers la cible),
             // clignotement + secousse sur le touché, glissade au KO
             float lung = bt.atk_t < 1.f ? sinf(bt.atk_t * 3.1416f) : 0.f;
-            ImVec2 foff = {esl, 0}, poff = {-psl, 0};
+            ImVec2 foff = {bt.st == Battle::INTRO && !bt.trainer ? esl : 0.f, 0.f},
+                   poff = {0.f, 0.f};
             if (bt.atk_side == 1) {                  // ennemi fond vers le bas-gauche
-                foff.x = -lung * 46.f * s2; foff.y = lung * 30.f * s2;
+                foff.x = -lung * 46.f * uds; foff.y = lung * 30.f * uds;
             } else if (bt.atk_side == 0) {           // joueur fond vers haut-droit
-                poff.x = lung * 46.f * s2; poff.y = -lung * 30.f * s2;
+                poff.x = lung * 46.f * uds; poff.y = -lung * 30.f * uds;
             }
             // hit DS (12 ticks @30Hz) : invisible t%4∈{2,3}, ±2px sinon
             auto hit_fx = [&](int side, bool& blink, float& dx) {
@@ -2622,7 +2798,7 @@ int main(int argc, char** argv) {
                 if (bt.hit_side != side || bt.hit_t <= 0.f) return;
                 int t = (int)((0.45f - bt.hit_t) * 30.f) % 12;
                 if (t % 4 >= 2) blink = true;
-                else dx += (t % 2 ? 2.f : -2.f) * s2;
+                else dx += (t % 2 ? 2.f : -2.f) * uds;
             };
             bool fblink, pblink;
             hit_fx(1, fblink, foff.x);
@@ -2634,27 +2810,33 @@ int main(int argc, char** argv) {
             // KO DS : le sprite s'enfonce dans le sol (crop bas) en 10 ticks
             float fdrop = bt.faint_t[1];
             if (tf && !foe_out && fdrop < 1.f && !fblink) {
-                float sink = fdrop * 80.f * s2;
-                float ybot = ffoot + (80 - fb) * fs / 80.f + foff.y;
+                float ftop = fctr.y - fs * 0.5f + foff.y;
+                float sink = fdrop * 80.f * uds;
+                float ybot = ftop + fb * fs / 80.f;
                 dl->PushClipRect({0, 0}, {io.x, ybot}, true);
                 dl->AddImage((ImTextureID)(intptr_t)tf,
-                    {epc.x - fs * 0.5f + foff.x, ffoot - fb * fs / 80.f + foff.y + sink},
-                    {epc.x + fs * 0.5f + foff.x, ybot + sink});
+                    {fctr.x - fs * 0.5f + foff.x, ftop + sink},
+                    {fctr.x + fs * 0.5f + foff.x, ftop + fs + sink});
                 dl->PopClipRect();
+            } else if (tf && !foe_out && !fblink) {
+                dl->AddImage((ImTextureID)(intptr_t)tf,
+                    {fctr.x - fs * 0.5f + foff.x, fctr.y - fs * 0.5f + foff.y},
+                    {fctr.x + fs * 0.5f + foff.x, fctr.y + fs * 0.5f + foff.y});
             }
             if (bt.st == Battle::THROW || bt.caught) {
                 GLuint btex = world.item_icon_tex(bt.ball, 0);
-                float bs = 22.f * s2;
+                float bs = 22.f * uds;
+                float ffoot = fctr.y + 30.f * uds, pfoot = pctr.y + 34.f * uds;
                 if (bt.tphase == 0) {           // vol en arc joueur -> ennemi
                     float t = std::min(1.f, 1.f - bt.anim / 1.0f);
                     float bx = ppc.x + (epc.x - ppc.x) * t;
-                    float by = pfoot - ps + (ffoot - pfoot + ps * 0.4f) * t
-                        - sinf(t * 3.1416f) * 40.f * s2;
+                    float by = pfoot + (ffoot - pfoot - 10.f * uds) * t
+                        - sinf(t * 3.1416f) * 40.f * uds;
                     if (btex) dl->AddImage((ImTextureID)(intptr_t)btex,
                         {bx - bs / 2, by - bs / 2}, {bx + bs / 2, by + bs / 2});
                 } else if (btex) {              // au sol : wobble en secousse
                     float wx = (bt.tphase == 1 && bt.anim > 0.25f)
-                        ? sinf((float)ImGui::GetTime() * 28.f) * 5.f * s2 : 0.f;
+                        ? sinf((float)ImGui::GetTime() * 28.f) * 5.f * uds : 0.f;
                     dl->AddImage((ImTextureID)(intptr_t)btex,
                         {epc.x - bs / 2 + wx, ffoot - bs * 0.8f},
                         {epc.x + bs / 2 + wx, ffoot + bs * 0.2f});
@@ -2662,69 +2844,66 @@ int main(int argc, char** argv) {
             }
             float pdrop = bt.faint_t[0];
             if (tb && pdrop < 1.f && !pblink) {
-                float sink = pdrop * 80.f * s2;
-                float ybot = pfoot + (80 - pb) * ps / 80.f + poff.y;
+                float ptop = pctr.y - fs * 0.5f + poff.y;
+                float sink = pdrop * 80.f * uds;
+                float ybot = ptop + pb * fs / 80.f;
                 dl->PushClipRect({0, 0}, {io.x, ybot}, true);
                 dl->AddImage((ImTextureID)(intptr_t)tb,
-                    {ppc.x - ps * 0.5f + poff.x, pfoot - pb * ps / 80.f + poff.y + sink},
-                    {ppc.x + ps * 0.5f + poff.x, ybot + sink});
+                    {pctr.x - fs * 0.5f + poff.x, ptop + sink},
+                    {pctr.x + fs * 0.5f + poff.x, ptop + fs + sink});
                 dl->PopClipRect();
+            } else if (tb && !pblink) {
+                dl->AddImage((ImTextureID)(intptr_t)tb,
+                    {pctr.x - fs * 0.5f + poff.x, pctr.y - fs * 0.5f + poff.y},
+                    {pctr.x + fs * 0.5f + poff.x, pctr.y + fs * 0.5f + poff.y});
             }
-            // ── boîtes PV : fenêtre DS pl_winframe + NFGR ──
-            auto hpbox = [&](const BatMon& m, float x, float y, bool mine) {
-                float uy2 = io.y / 720.f;
+            // ── boîtes PV aux ancres DS (healthbox.c) : ennemie (58,36),
+            // joueur (192,116) — fenêtre DS pl_winframe + NFGR ──
+            auto hpbox = [&](const BatMon& m, float ax, float ay, bool mine) {
                 ds_font_ready(db);
-                float w = mine ? 300.f : 272.f, h = mine ? 104.f : 72.f;
+                float w = (mine ? 104.f : 100.f) * uds,
+                      h = (mine ? 40.f : 34.f) * uds;
+                float x = ax - w * 0.5f, y = ay - h * 0.5f;
                 const MapHeader* MHP = db.header(world.header());
-                ds_window(dl, db, MHP ? (int)MHP->win : 0, 8.f * uy2 * 1.4f,
+                ds_window(dl, db, MHP ? (int)MHP->win : 0, 5.f * uds,
                     ImVec2(x, y), ImVec2(x + w, y + h));
-                float hsc = uy2 * 1.5f;
+                float hsc = uds * 0.62f;
                 std::string nm = battle_species_name(&db, m.species);
-                ds_text(dl, nm, x + 16, y + 10, 0, hsc);
+                ds_text(dl, nm, x + 7.f * uds, y + 4.f * uds, 0, hsc);
                 std::string lv = tr("N. ", "Lv. ") + std::to_string(m.level);
-                ds_text(dl, lv, x + w - 16 - ds_text_w(lv, hsc), y + 10,
-                    6, hsc);
+                ds_text(dl, lv, x + w - 7.f * uds - ds_text_w(lv, hsc),
+                    y + 4.f * uds, 6, hsc);
                 float r = m.maxhp ? bt.disp_hp[mine ? 0 : 1] / m.maxhp : 0.f;
                 if (r > 1.f) r = 1.f;
-                float hby = y + h - (mine ? 52 : 30) - uy2 * 4.f;
-                ds_text(dl, tr("PV", "HP"), x + 16, hby, 5, hsc);
-                float bxx = x + 16 + ds_text_w("PV", hsc) + 14,
-                      bw2 = w - (bxx - x) - 18;
+                float hby = y + h - (mine ? 20.f : 13.f) * uds;
+                ds_text(dl, tr("PV", "HP"), x + 7.f * uds, hby, 5, hsc);
+                float bxx = x + 7.f * uds + ds_text_w("PV", hsc) + 5.f * uds,
+                      bw2 = x + w - 7.f * uds - bxx;
                 dl->AddRectFilled(ImVec2(bxx, hby + 2),
-                    ImVec2(bxx + bw2, hby + 14 * uy2),
-                    IM_COL32(60, 70, 90, 255), 5.f);
+                    ImVec2(bxx + bw2, hby + 8.f * uds),
+                    IM_COL32(60, 70, 90, 255), 4.f);
                 if (r > 0) dl->AddRectFilled(ImVec2(bxx, hby + 2),
-                    ImVec2(bxx + bw2 * r, hby + 14 * uy2), hp_col(r), 5.f);
+                    ImVec2(bxx + bw2 * r, hby + 8.f * uds), hp_col(r), 4.f);
                 dl->AddRect(ImVec2(bxx, hby + 2),
-                    ImVec2(bxx + bw2, hby + 14 * uy2), B_NAVY, 5.f, 0, 1.5f);
+                    ImVec2(bxx + bw2, hby + 8.f * uds), B_NAVY, 4.f, 0, 1.5f);
                 if (mine) {
                     std::string hn = std::to_string(m.hp) + " / " +
                         std::to_string(m.maxhp);
-                    ds_text(dl, hn, x + w - 16 - ds_text_w(hn, hsc),
-                        hby + 16 * uy2 + 4, 0, hsc);
+                    ds_text(dl, hn, x + w - 7.f * uds - ds_text_w(hn, hsc),
+                        y + h - 13.f * uds, 0, hsc);
                 }
             };
-            float hb = (1.f - hbox_sl) * 160.f * s2;  // boîtes PV glissent
-            hpbox(bt.foe(), 24 - hb, io.y * 0.06f, false);
-            hpbox(bt.you(), io.x - 324 + hb, io.y * 0.40f, true);
+            float hb = (1.f - hbox_sl) * 160.f * uds;  // boîtes PV glissent
+            hpbox(bt.foe(), tp(58, 36).x - hb, tp(58, 36).y, false);
+            hpbox(bt.you(), tp(192, 116).x + hb, tp(192, 116).y, true);
+            dl->PopClipRect();                          // fin de la scène
 
-            // ── zone tactile DS : texte à gauche + 4 gros boutons à droite ──
-            float mx = 18.f;
-            float uyb = io.y / 720.f;
-            float strip = 10.f;                    // liseré violet bas
-            float btnw = 226.f * (io.x / 1280.f), btnh = 58.f * uyb, bgap = 10.f;
-            bool menu_st = bt.st == Battle::CHOICE ||
-                           bt.st == Battle::PICKMOVE;
-            // menus tactiles : zone élargie (le sous-écran DS = 192px)
-            float cmdh = menu_st ? io.y * 0.40f
-                                 : 2 * btnh + bgap + 16.f;
-            float my2 = io.y - strip - cmdh - 10.f;
+            // ── écran du bas : sous-écran tactile DS (pl_batt_bg : coquille
+            // m49 + boutons m42 actions / m47 attaques, palette m242, tuiles m28)
             ImVec2 mp = ImGui::GetIO().MousePos;
             bool clk = ImGui::IsMouseClicked(0);
             bool choice = bt.st == Battle::CHOICE ||
                           bt.st == Battle::PICKMOVE;
-            // sous-écran DS : pl_batt_bg — coquille (m49) + tuiles boutons
-            // (m42 action / m47 attaques), palette m242, tuiles m28.
             static GLuint bt_shell = 0, bt_act = 0, bt_mov = 0;
             static int btsh_h = 192;
             static bool bts_try = false;
@@ -2744,23 +2923,16 @@ int main(int argc, char** argv) {
                 }
             }
             float uvmax = btsh_h > 0 ? 192.f / btsh_h : 1.f;
-            // zone menu DS : bande du bas pleine largeur (carte 256x192 ->
-            // rect fenêtre). scx/scy mappent les coordonnées DS -> pixels.
-            auto scx = [&](float sx) {
-                return mx + sx * (io.x - 2 * mx) / 256.f; };
-            auto scy = [&](float sy) {
-                return my2 + sy * cmdh / 192.f; };
-            if (choice && bt_shell) {
+            if (bt_shell)
                 dl->AddImage((ImTextureID)(intptr_t)bt_shell,
-                    {mx, my2}, {io.x - mx, my2 + cmdh},
-                    {0, 0}, {1, uvmax});
-                dl->AddImage((ImTextureID)(intptr_t)
-                        (bt.st == Battle::CHOICE ? bt_act : bt_mov),
-                    {mx, my2}, {io.x - mx, my2 + cmdh},
-                    {0, 0}, {1, uvmax});
-            }
-            // boîte message DS (pleine largeur hors menus ; le sous-écran
-            // affiche l'invite en haut de la coquille)
+                    dn(0, 0), dn(256, 192), {0, 0}, {1, uvmax});
+            if (bt.st == Battle::CHOICE && bt_act)
+                dl->AddImage((ImTextureID)(intptr_t)bt_act,
+                    dn(0, 0), dn(256, 192), {0, 0}, {1, uvmax});
+            if (bt.st == Battle::PICKMOVE && bt_mov)
+                dl->AddImage((ImTextureID)(intptr_t)bt_mov,
+                    dn(0, 0), dn(256, 192), {0, 0}, {1, uvmax});
+            // invite en haut de la coquille (« Que doit faire X ? »)
             std::string qt = bt.msg;
             if (qt.empty() && bt.st == Battle::CHOICE) {
                 qt = tr("Que doit faire ", "What will ") +
@@ -2768,46 +2940,41 @@ int main(int argc, char** argv) {
                      tr(" ?", " do?");
             }
             ds_font_ready(db);
-            float tw = io.x - 2 * mx;
-            if (!choice || !bt_shell) {
+            if (bt.st == Battle::CHOICE && !qt.empty())
+                ds_text(dl, qt, dn(10, 4).x, dn(10, 4).y,
+                    bt_shell ? 3 : 0, uds * 0.9f);
+            // boîte message DS sur l'écran du haut : (16,152) taille 216x32,
+            // 2 lignes max (les événements du tour montrent les dernières)
+            bool msg_show = !bt.msg.empty() && !choice &&
+                bt.st != Battle::BAG;
+            if (msg_show) {
                 const MapHeader* MHB = db.header(world.header());
                 int bf = MHB ? (int)MHB->win : 0;
-                ds_window(dl, db, bf, 8.f * uyb * 2.6f, ImVec2(mx, my2),
-                    ImVec2(mx + tw, my2 + cmdh));
-            }
-            if (bt.st == Battle::CHOICE) {
-                float bfsc = uyb * 2.6f;
-                ds_text(dl, qt, scx(10), scy(4), bt_shell ? 3 : 0, bfsc);
-            } else if (!choice) {
-                // DS : la boîte combat n'affiche que 2 lignes — les événements
-                // du tour s'accumulent dans bt.msg, on montre les derniers
-                float bfsc = uyb * 2.6f;
+                ds_window(dl, db, bf, 5.f * uds, tp(16, 152), tp(232, 184));
                 std::vector<std::string> lines;
-                for (size_t p0 = 0; p0 <= qt.size(); ) {
-                    size_t p1 = qt.find('\n', p0);
-                    lines.push_back(qt.substr(p0,
+                for (size_t p0 = 0; p0 <= bt.msg.size(); ) {
+                    size_t p1 = bt.msg.find('\n', p0);
+                    lines.push_back(bt.msg.substr(p0,
                         p1 == std::string::npos ? p1 : p1 - p0));
                     if (p1 == std::string::npos) break;
                     p0 = p1 + 1;
                 }
                 while (lines.size() > 2) lines.erase(lines.begin());
-                float lh = g_dfont.cellH * bfsc + 6.f;
-                float ty = my2 + cmdh * 0.5f - lh * lines.size() * 0.5f;
+                float bfsc = uds * 0.85f;
+                float lh = g_dfont.cellH * bfsc + 3.f;
+                float ty = tp(16, 152).y + (32.f * uds - lh * lines.size()) * 0.5f;
                 for (size_t li = 0; li < lines.size(); li++)
-                    ds_text(dl, lines[li], mx + 30, ty + li * lh, 0, bfsc);
-            }
-            // ▼ centré en bas si message seul
-            if (!choice && bt.st != Battle::PICKMOVE) {
+                    ds_text(dl, lines[li], tp(22, 156).x, ty + li * lh,
+                        0, bfsc);
+                // ▼ en bas à droite de la boîte
                 float bob = sinf((float)ImGui::GetTime() * 6.f) * 2.5f;
-                ImVec2 asz = ImGui::CalcTextSize("▼");
-                dl->AddText({mx + (tw - asz.x) / 2,
-                    my2 + cmdh - asz.y - 8 + bob},
+                dl->AddText({tp(218, 176).x, tp(218, 176).y + bob},
                     B_ORANGE, "▼");
             }
             if (bt.st == Battle::CHOICE) {
                 // boutons du sous-écran DS (membre 42) : ATTAQUE large en
                 // haut, SAC / POKéMON / FUITE en ligne du bas.
-                static const float BR[4][4] = {          // src 256x192
+                static const float BR[4][4] = {          // coords DS 256x192
                     {16, 34, 240, 128},                  // ATTAQUE (rouge)
                     {0, 144, 84, 192},                   // SAC     (orange)
                     {84, 144, 176, 192},                 // POKéMON (bleu)
@@ -2816,55 +2983,36 @@ int main(int argc, char** argv) {
                 const char* q[4] = {tr("ATTAQUE", "FIGHT"), tr("SAC", "BAG"),
                                     tr("POKéMON", "POKéMON"),
                                     tr("FUITE", "RUN")};
-                if (bt_act) {
-                    for (int i = 0; i < 4; i++) {
-                        float x0 = scx(BR[i][0]), y0 = scy(BR[i][1]);
-                        float x1 = scx(BR[i][2]), y1 = scy(BR[i][3]);
-                        bool sel = i == bt.sel;
-                        bool hov = mp.x >= x0 && mp.x <= x1 &&
-                                   mp.y >= y0 && mp.y <= y1;
-                        if (hov) bt.sel = i;
-                        if (hov && clk) push_key(SDLK_E);
-                        if (sel)
-                            dl->AddRect({x0, y0}, {x1, y1}, B_WHITE,
-                                10.f, 0, 3.f);
-                        float bfsc2 = uyb * 1.7f;
-                        float qw = ds_text_w(q[i], bfsc2);
-                        ds_text(dl, q[i], x0 + (x1 - x0 - qw) / 2,
-                            y0 + (y1 - y0) / 2 - g_dfont.cellH * bfsc2 / 2,
-                            5, bfsc2);
-                    }
-                } else {
-                    float bx0 = io.x - mx - (2 * btnw + bgap);
-                    for (int i = 0; i < 4; i++) {
-                        float bx = bx0 + (i % 2) * (btnw + bgap);
-                        float by = my2 + 8 + (i / 2) * (btnh + bgap);
-                        bool sel = i == bt.sel;
-                        bool hov = mp.x >= bx && mp.x <= bx + btnw &&
-                                   mp.y >= by && mp.y <= by + btnh;
-                        if (hov) bt.sel = i;
-                        if (hov && clk) push_key(SDLK_E);
-                        dl->AddRectFilled({bx, by}, {bx + btnw, by + btnh},
-                            IM_COL32(200, 80, 80, 255), 12.f);
-                        dl->AddRect({bx, by}, {bx + btnw, by + btnh},
-                            B_WHITE, 12.f, 0, sel ? 3.5f : 2.f);
-                        float bfsc2 = uyb * 1.9f;
-                        float qw = ds_text_w(q[i], bfsc2);
-                        ds_text(dl, q[i], bx + (btnw - qw) / 2,
-                            by + btnh / 2 - g_dfont.cellH * bfsc2 / 2,
-                            5, bfsc2);
-                    }
+                for (int i = 0; i < 4; i++) {
+                    float x0 = dn(BR[i][0], BR[i][1]).x,
+                          y0 = dn(BR[i][0], BR[i][1]).y;
+                    float x1 = dn(BR[i][2], BR[i][3]).x,
+                          y1 = dn(BR[i][2], BR[i][3]).y;
+                    bool sel = i == bt.sel;
+                    bool hov = mp.x >= x0 && mp.x <= x1 &&
+                               mp.y >= y0 && mp.y <= y1;
+                    if (hov) bt.sel = i;
+                    if (hov && clk) push_key(SDLK_E);
+                    if (sel)
+                        dl->AddRect({x0, y0}, {x1, y1}, B_WHITE,
+                            8.f * uds, 0, 3.f);
+                    float bfsc2 = uds * 0.75f;
+                    float qw = ds_text_w(q[i], bfsc2);
+                    ds_text(dl, q[i], x0 + (x1 - x0 - qw) / 2,
+                        y0 + (y1 - y0) / 2 - g_dfont.cellH * bfsc2 / 2,
+                        5, bfsc2);
                 }
             } else if (bt.st == Battle::PICKMOVE) {
-                // attaques : boutons acier du sous-écran DS (nom + PP)
-                // boutons acier du sous-écran DS (membre 47) : 2x2
-                static const float MB[4][4] = {        // src 256x192
+                // boutons acier du sous-écran DS (membre 47) : grille 2x2
+                static const float MB[4][4] = {        // coords DS 256x192
                     {5, 27, 121, 80}, {134, 27, 250, 80},
                     {5, 83, 121, 136}, {134, 83, 250, 136}
                 };
                 for (int i = 0; i < 4; i++) {
-                    float bx = scx(MB[i][0]), by = scy(MB[i][1]);
-                    float gx = scx(MB[i][2]) - bx, gh = scy(MB[i][3]) - by;
+                    float bx = dn(MB[i][0], MB[i][1]).x,
+                          by = dn(MB[i][0], MB[i][1]).y;
+                    float gx = dn(MB[i][2], MB[i][3]).x - bx,
+                          gh = dn(MB[i][2], MB[i][3]).y - by;
                     bool have = i < bt.you().nmoves;
                     bool sel = i == bt.sel;
                     bool hov = have && mp.x >= bx && mp.x <= bx + gx &&
@@ -2873,67 +3021,73 @@ int main(int argc, char** argv) {
                     if (hov && clk) push_key(SDLK_E);
                     if (sel)
                         dl->AddRect({bx, by}, {bx + gx, by + gh},
-                            B_ORANGE, 8.f, 0, 2.5f);
+                            B_ORANGE, 6.f * uds, 0, 2.5f);
                     if (!have) {
-                        ds_text(dl, "-", bx + 14, by + 6, 6, uyb * 1.7f);
+                        ds_text(dl, "-", bx + 10 * uds, by + 4 * uds,
+                            6, uds * 0.8f);
                         continue;
                     }
                     MoveInfo mi = battle_move(&db, bt.you().moves[i]);
                     std::string s = battle_move_name(&db, bt.you().moves[i]);
-                    float mfsc = uyb * 1.6f;
+                    float mfsc = uds * 0.8f;
                     float mw = ds_text_w(s, mfsc);
                     ds_text(dl, s, bx + (gx - mw) / 2,
-                        by + gh * 0.28f, 3, mfsc);
+                        by + gh * 0.26f, 3, mfsc);
                     // PP courant/max centré en bas du bouton
-                    float psc = uyb * 1.25f;
+                    float psc = uds * 0.6f;
                     char pp[32]; snprintf(pp, sizeof pp,
-                        tr("PP %d/%d", "PP %d/%d"), bt.you().pp[i], mi.pp);
-                    float pw = ds_text_w(pp, psc);
-                    ds_text(dl, pp, bx + (gx - pw) / 2,
-                        by + gh * 0.62f, 3, psc);
+                        "PP %d/%d", bt.you().pp[i], mi.pp);
+                    float pw2 = ds_text_w(pp, psc);
+                    ds_text(dl, pp, bx + (gx - pw2) / 2,
+                        by + gh * 0.60f, 3, psc);
                 }
             } else if (bt.st == Battle::BAG) {
-                // picker Balls DS : liste compacte à droite (icône+nom+qté)
+                // picker Balls : liste dans le sous-écran (icône+nom+qté)
                 auto balls = world.bag_items(2);        // poche Balls DS
                 int nb = (int)balls.size();
-                float pw2 = 2 * btnw + bgap, ph2 = cmdh;
-                float bx0 = io.x - mx - pw2;
+                float bx0 = dn(8, 56).x, by0 = dn(8, 56).y;
+                float bx1 = dn(248, 184).x, by1 = dn(8, 184).y;
                 {
                     const MapHeader* MH6 = db.header(world.header());
                     int cf7 = MH6 ? (int)MH6->win : 0;
-                    ds_window(dl, db, cf7, 8.f * uyb * 2.6f,
-                        ImVec2(bx0, my2), ImVec2(bx0 + pw2, my2 + ph2));
+                    ds_window(dl, db, cf7, 5.f * uds,
+                        ImVec2(bx0, by0), ImVec2(bx1, by1));
                 }
-                float bfsc3 = uyb * 2.2f;
+                float bfsc3 = uds * 0.8f;
                 if (!nb) {
                     ds_text(dl, tr("Aucune Ball dans le sac !",
-                        "No Balls in the Bag!"), bx0 + 22, my2 + 40, 0, bfsc3);
+                        "No Balls in the Bag!"), bx0 + 12 * uds,
+                        by0 + 20 * uds, 0, bfsc3);
                 }
-                float rh = std::min(46.f, (ph2 - 34.f) / std::max(1, nb));
+                float rh = std::min(20.f * uds,
+                    (by1 - by0 - 14.f * uds) / std::max(1, nb));
                 for (int i = 0; i < nb; i++) {
-                    float ry = my2 + 30 + i * rh;
+                    float ry = by0 + 12 * uds + i * rh;
                     bool sel = i == bt.sel;
-                    bool hov = mp.x >= bx0 + 8 && mp.x <= bx0 + pw2 - 8 &&
-                               mp.y >= ry && mp.y <= ry + rh - 4;
+                    bool hov = mp.x >= bx0 + 6 * uds && mp.x <= bx1 - 6 * uds &&
+                               mp.y >= ry && mp.y <= ry + rh - 3;
                     if (hov) bt.sel = i;
                     if (hov && clk) world.battle_throw(balls[i].first);
                     if (sel || hov)
-                        dl->AddRectFilled({bx0 + 8, ry}, {bx0 + pw2 - 8, ry + rh - 4},
+                        dl->AddRectFilled({bx0 + 6 * uds, ry},
+                            {bx1 - 6 * uds, ry + rh - 3},
                             IM_COL32(200, 216, 240, 255), 4.f);
                     GLuint ic = world.item_icon_tex(balls[i].first, sel ? 1 : 0);
-                    float is = rh - 12;
+                    float is = rh - 8;
                     if (ic) dl->AddImage((ImTextureID)(intptr_t)ic,
-                        {bx0 + 16, ry + 3}, {bx0 + 16 + is, ry + 3 + is});
+                        {bx0 + 10 * uds, ry + 2}, {bx0 + 10 * uds + is, ry + 2 + is});
                     std::string nm = world.item_name(balls[i].first);
-                    ds_text(dl, nm, bx0 + 20 + is, ry + (rh - 4 - 16) / 2,
+                    ds_text(dl, nm, bx0 + 12 * uds + is, ry + (rh - 3 - 12) / 2,
                         0, bfsc3);
                     char qt2[16]; snprintf(qt2, sizeof qt2, "x%d",
                         balls[i].second);
-                    ds_text(dl, qt2, bx0 + pw2 - 26 - ds_text_w(qt2, bfsc3),
-                        ry + (rh - 4 - 16) / 2, 6, bfsc3);
+                    ds_text(dl, qt2, bx1 - 14 * uds - ds_text_w(qt2, bfsc3),
+                        ry + (rh - 3 - 12) / 2, 6, bfsc3);
                 }
-            } else if (clk && mp.y >= my2 && mp.y <= my2 + cmdh) {
-                push_key(SDLK_E);      // clic sur le message = avancer
+            } else if (clk && msg_show &&
+                       mp.x >= tp(16, 152).x && mp.x <= tp(232, 184).x &&
+                       mp.y >= tp(16, 152).y && mp.y <= tp(232, 184).y) {
+                push_key(SDLK_E);      // clic sur la boîte message = avancer
             }
             // fade-in DS : 8 ticks depuis le noir pendant le slide-in
             if (bt.st == Battle::INTRO && bt.anim > 0.933f) {
@@ -2941,19 +3095,25 @@ int main(int argc, char** argv) {
                 dl->AddRectFilled({0, 0}, io,
                     IM_COL32(0, 0, 0, std::min(255, fa)));
             }
-            // liseré violet DS en bas
-            dl->AddRectFilled({0, io.y - strip}, {io.x, io.y}, B_PURP);
-            dl->AddRectFilled({0, io.y - strip}, {io.x, io.y - strip + 3},
-                B_PURP2);
             }
         }
+        // ── PC : le script a appelé OpenPcFunction et attend l'appli ─────
+        if (world.pc_open() && ui_st == UI_NONE) {
+            ui_st = UI_PC; pc_side = 0; pc_col = 0; pc_row = 0; pc_psel = 0;
+            world.ui_frozen = true;
+        }
         // ── menu multi (Multi/ShowMenu) : liste DS + curseur triangle ─────
-        static int msel = 0; static bool mwas = false;
-        if (!world.menu_open()) { mwas = false; msel = 0; }
+        static bool mwas = false;
+        if (!world.menu_open()) { mwas = false; menu_msel = 0; }
         if (world.menu_open()) {
-            if (!mwas) { msel = 0; mwas = true; }
+            if (!mwas) { menu_msel = 0; mwas = true;
+                if (world.verbose) { auto& it2 = world.menu_items();
+                    printf("[menu] f=%d\n", frames);
+                    for (auto& e2 : it2) printf("[menu] slot=%d txt='%s'\n",
+                        e2.first, world.menu_text(e2.second).c_str()); } }
             auto& items = world.menu_items();
             int nm = (int)items.size();
+            int& msel = menu_msel;
             if (msel >= nm) msel = 0;
             int sw2, sh2;
             SDL_GetWindowSize(win, &sw2, &sh2);
@@ -3005,15 +3165,6 @@ int main(int argc, char** argv) {
             ImGui::End();
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(2);
-            if (ImGui::IsKeyPressed(ImGuiKey_S) ||
-                ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-                msel = (msel + 1) % std::max(1, nm);
-            if (ImGui::IsKeyPressed(ImGuiKey_W) ||
-                ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-                msel = (msel + nm - 1) % std::max(1, nm);
-            if (ImGui::IsKeyPressed(ImGuiKey_E) ||
-                ImGui::IsKeyPressed(ImGuiKey_Enter))
-                world.menu_pick(items[msel].first);
         }
         // ── boutique DS : fenêtre + liste NFGR + prix + argent ────────────
         if (world.shop_open()) {
@@ -3635,6 +3786,108 @@ int main(int argc, char** argv) {
                 else
                     dt_text(dl, tr("Choisir un Pokémon.", "Choose a POKÉMON."),
                         20, 158, 0);
+            } else if (ui_st == UI_PC) {
+                // ── stockage PC : grille boîte 6x5 + colonne équipe ──
+                float sw = (float)sw2, sh = (float)sh2;
+                g_uds = sh / 192.f;
+                g_udx = (sw - 256.f * g_uds) * 0.5f;
+                ds_font_ready(db);
+                ImDrawList* dl = ImGui::GetForegroundDrawList();
+                sb_bg(dl, sw, sh);
+                auto& box = world.pcbox();
+                auto& pty = world.party();
+                int mode = world.pc_mode();
+                // cadre boîte
+                dl->AddRectFilled(dp(4, 4), dp(168, 26),
+                    IM_COL32(24, 40, 80, 255), 4.f);
+                dt_text(dl, World::box_name(pc_box), 10, 9, 5);
+                int ntot = 0;
+                for (int s = 0; s < 540; s++) if (box[s].species) ntot++;
+                char ttl[32]; snprintf(ttl, sizeof(ttl), "%d", ntot);
+                dt_text(dl, ttl, 146, 9, 5);
+                // grille 6x5 : cellule 26x26 a partir de (8,32)
+                ImVec2 mp = ImGui::GetIO().MousePos;
+                bool clk = ImGui::IsMouseClicked(0);
+                int iconf = (int)(SDL_GetTicks() / 250) & 1;
+                for (int r = 0; r < 5; r++) for (int c = 0; c < 6; c++) {
+                    int i = pc_box * 30 + r * 6 + c;
+                    float gx = 8 + c * 26.f, gy = 32 + r * 26.f;
+                    bool sel = pc_side == 0 && pc_col == c && pc_row == r;
+                    if (clk && mp.x >= dp(gx, gy).x &&
+                        mp.x <= dp(gx + 26, gy + 26).x &&
+                        mp.y >= dp(gx, gy).y && mp.y <= dp(gx + 26, gy + 26).y) {
+                        if (sel) push_key(SDLK_E);
+                        else { pc_side = 0; pc_col = c; pc_row = r; }
+                    }
+                    dl->AddRectFilled(dp(gx, gy), dp(gx + 24, gy + 24),
+                        sel ? IM_COL32(70, 96, 150, 255)
+                            : IM_COL32(30, 44, 74, 255), 3.f);
+                    if (box[i].species) {
+                        GLuint ic = world.mon_icon_tex(box[i].species, iconf);
+                        if (ic)
+                            dl->AddImage((ImTextureID)(intptr_t)ic,
+                                dp(gx - 4, gy - 4), dp(gx + 28, gy + 28));
+                    }
+                    if (sel) {
+                        ImVec2 c0 = dp(gx + 8, gy - 5), c1 = dp(gx + 8, gy + 3),
+                               c2 = dp(gx + 14, gy - 1);
+                        dl->AddTriangleFilled(c0, c1, c2,
+                            IM_COL32(232, 40, 40, 255));
+                    }
+                }
+                // colonne équipe (droite)
+                dl->AddRectFilled(dp(174, 4), dp(252, 26),
+                    IM_COL32(24, 40, 80, 255), 4.f);
+                dt_text(dl, tr("EQUIPE", "PARTY"), 180, 9, 5);
+                for (int i = 0; i < 6; i++) {
+                    float py = 32 + i * 26.f;
+                    bool sel = pc_side == 1 && pc_psel == i;
+                    bool hov = clk && mp.x >= dp(174, py).x &&
+                        mp.x <= dp(252, py + 24).x &&
+                        mp.y >= dp(174, py).y && mp.y <= dp(174, py + 24).y;
+                    if (hov) {
+                        if (sel) push_key(SDLK_E);
+                        else { pc_side = 1; pc_psel = i; }
+                    }
+                    dl->AddRectFilled(dp(174, py), dp(252, py + 24),
+                        sel ? IM_COL32(70, 96, 150, 255)
+                            : IM_COL32(30, 44, 74, 255), 3.f);
+                    if (i < (int)pty.size()) {
+                        auto& m = pty[i];
+                        GLuint ic = world.mon_icon_tex(m.species, iconf);
+                        if (ic)
+                            dl->AddImage((ImTextureID)(intptr_t)ic,
+                                dp(170, py - 4), dp(202, py + 28));
+                        dl->PushClipRect(dp(174, py), dp(252, py + 24), true);
+                        dt_text(dl, world.species_name(m.species),
+                            204, py + 2, 5);
+                        char lv[12];
+                        snprintf(lv, sizeof(lv), "N.%d", m.level);
+                        dt_text(dl, lv, 204, py + 13, 4);
+                        dl->PopClipRect();
+                    }
+                }
+                // pied : mon sélectionné + aide
+                const ScriptVM::PartyMon* sm = nullptr;
+                if (pc_side == 0) {
+                    int i = pc_box * 30 + pc_row * 6 + pc_col;
+                    if (i < 540 && box[i].species) sm = &box[i];
+                } else if (pc_psel < (int)pty.size()) sm = &pty[pc_psel];
+                if (sm) {
+                    char inf[64];
+                    snprintf(inf, sizeof(inf), "%s  N.%d",
+                        world.species_name(sm->species).c_str(), sm->level);
+                    dt_text(dl, inf, 8, 168, 5);
+                }
+                const char* hint = mode == 0
+                    ? tr("E : deposer   TAB : changer   X : quitter",
+                         "E: deposit  TAB: switch  X: quit")
+                    : mode == 1
+                    ? tr("E : retirer   TAB : changer   X : quitter",
+                         "E: withdraw  TAB: switch  X: quit")
+                    : tr("E : deplacer  TAB : changer   X : quitter",
+                         "E: move  TAB: switch  X: quit");
+                dt_text(dl, hint, 8, 180, 4);
             } else if (ui_st == UI_SAVE) {
                 // ── sauvegarde DS : boîte message en bas + oui/non ──
                 float sw = (float)sw2, sh = (float)sh2;
@@ -4050,6 +4303,7 @@ int main(int argc, char** argv) {
         // captures AVANT le swap : le contenu du back buffer est indéfini
         // après SDL_GL_SwapWindow -> lectures striées.
         frames++;
+        world._dbg_frames = frames;
         auto dump_frame = [&](const char* path) {
             int dw = 0, dh = 0;
             SDL_GetWindowSizeInPixels(win, &dw, &dh);   // drawable != fenêtre si HiDPI

@@ -196,6 +196,7 @@ void World::draw_title(float asp) {
                     g.alpha_cut = alpha;
                     g.blend = polyA < 31 ? std::max(polyA / 31.f, 0.03f) : 1.f;
                 /*DS attr*/ g.poly_id = (mg.matdef.poly >> 24) & 63; g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                /*DS attr*/ g.lit = mg.matdef.poly & 0xF;
                     if (!t && (mg.matdef.dif & 0x8000))
                         g.tint = rgb555f(mg.matdef.dif & 0x7FFF);
                     pi.meshes.push_back(g);
@@ -535,4 +536,34 @@ void World::battle_plat_size(int ter, int side, int* w, int* h) {
     auto it = g_platsz.find(key);
     if (it == g_platsz.end()) { *w = *h = 0; return; }
     *w = it->second.first; *h = it->second.second;
+}
+
+// ── sprites dresseur de combat : trbgra (dos) / trfgra (face) -----------------
+// groupes de 5 membres : [NCGR][NCLR][RECN][RNAN][NCGR 2e feuille]. La cellule 0
+// du RECN donne la pose debout (les cellules suivantes = lancer de Ball).
+static uint32_t tr_tex(Nds* db, const char* path, int idx) {
+    static std::map<std::string, std::map<int, uint32_t>> cache;
+    auto& c = cache[path];
+    auto it = c.find(idx);
+    if (it != c.end()) return it->second;
+    uint32_t t = 0;
+    auto n = db->narc(path);
+    if (n && idx * 5 + 2 < n->count()) {
+        auto g = spr::parse_ncgr(n->member(idx * 5));
+        auto pals = spr::parse_nclr(n->member(idx * 5 + 1));
+        auto cells = spr::parse_ncer(n->member(idx * 5 + 2));
+        if (!pals.empty() && !cells.empty()) {
+            if (auto im = spr::render_cell(g, cells[0], pals, 0, true))
+                t = rnd::upload_tex(*im);
+        }
+    }
+    c[idx] = t;
+    return t;
+}
+
+uint32_t World::trainer_back_tex(int idx) {
+    return tr_tex(_db, "/poketool/trgra/trbgra.narc", idx);
+}
+uint32_t World::trainer_front_tex(int idx) {
+    return tr_tex(_db, "/poketool/trgra/trfgra.narc", idx);
 }

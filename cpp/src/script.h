@@ -11,7 +11,7 @@ class ScriptVM {
 public:
     struct OpDef { uint16_t op; const char* name; const char* widths; };
     enum St { DONE, RUN, MSG, WAITBTN, YESNO, MOVE, WAITTIME, WAITFADE, MENU,
-              STARTER, BATTLE, SHOP, WAITANIM, WAITSND };
+              STARTER, BATTLE, SHOP, WAITANIM, WAITSND, PCBOX };
 
     bool load(const Bytes* file);            // membre scr_seq (réf stable)
     bool load_std(const Bytes* file);        // scripts_common (CallStandard)
@@ -73,6 +73,9 @@ public:
         int moves[4] = {0}, pp[4] = {0}, nmoves = 0;  // moves persistants
     };
     std::vector<PartyMon> party;
+    // stockage PC : 18 boîtes x 30 slots fixes (species==0 = slot vide)
+    std::vector<PartyMon> pcbox = std::vector<PartyMon>(540);
+    int pc_mode = 0;                           // BoxMode OpenPcFunction (0-4)
     int chosen_starter = 0, rival_starter = 0, cpart_starter = 0;
     static int starter_id(int i);                    // 0-2 -> espèce
     void starter_pick(int i);                        // choix -> reprend le script
@@ -94,7 +97,7 @@ public:
     void set_var(int v, int val);
     bool flag(int f) const;
     void set_flag(int f, bool on);
-    int  result = 0;                          // registre 0x800C (LASTRESULT)
+    int  result = 0;                          // registre de comparaison ctx->data[0]
     int  pending_var = 0;                     // var cible d'un YesNoBox
     int  signpost_dest = 0;                   // var cible GetSignpostInput (0 si actif)
     int  wait_t = 0;                          // compteur WaitTime (frames)
@@ -105,6 +108,7 @@ public:
     std::function<int(int kind)>   cb_sndbusy;  // 1 si le canal attendu joue
     // menu multi (Multi/ShowMenu) : préparé par World, résultat -> menu_dest
     int  menu_dest = 0, menu_cancel = 0;
+    int  menu_bank = -1;                         // banque texte (-1 = courante)
     std::vector<std::pair<int,int>> menu_items; // (slot -> id msg banque courante)
     void menu_pick(int slot) { set_var(menu_dest, slot); _st = RUN; }
     // boutique (PokeMart*) : liste d'objets en vente, l'UI tourne côté main

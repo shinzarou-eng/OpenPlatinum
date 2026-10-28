@@ -209,12 +209,37 @@ void World::set_pos(float x, float z) {
     _ppos.y = (gy > -1e7f) ? gy : 40.f;
 }
 
+// début de la 3e ligne visible : même wrap glouton par mots que le rendu
+// (boîte DS = 2 lignes, le texte au-delà défile comme une nouvelle page)
+size_t World::_dlg_wrap_end(size_t mend) const {
+    if (!dlg_measure) return std::string::npos;
+    const float WRAPW = 27 * 8.f - 16.f;        // même largeur que main.cpp
+    int lines = 1;
+    size_t lstart = _dlg_page, j = _dlg_page;
+    while (j < mend) {
+        char c = _dialog[j];
+        if (c == '\n') { j++; lstart = j;
+            if (++lines > 2) return lstart; continue; }
+        if (c == ' ') { j++; continue; }
+        size_t we = j;
+        while (we < mend && _dialog[we] != ' ' && _dialog[we] != '\n') we++;
+        if (dlg_measure(_dialog, lstart, we) > WRAPW && j > lstart) {
+            if (++lines > 2) return j;
+            lstart = j;
+        }
+        j = we;
+    }
+    return std::string::npos;
+}
+
 // fin de la page de dialogue courante : prochain marqueur page DS (\n\n,
-// décodé depuis 0x25BC/BD) ou fin du message
+// décodé depuis 0x25BC/BD), début de 3e ligne (scroll), ou fin du message
 size_t World::dlg_page_end() const {
     if (_dlg_page >= _dialog.size()) return _dialog.size();
     size_t p = _dialog.find("\n\n", _dlg_page);
-    return p == std::string::npos ? _dialog.size() : p;
+    size_t mend = p == std::string::npos ? _dialog.size() : p;
+    size_t w = _dlg_wrap_end(mend);
+    return w != std::string::npos && w < mend ? w : mend;
 }
 
 // texte dévoilé : _dlg_chars compte des caractères DANS la page courante
@@ -247,7 +272,10 @@ void World::action() {
             // page terminée + il en reste : on avance de page, pas le script
             size_t pe = dlg_page_end();
             if (pe < _dialog.size()) {
-                _dlg_page = pe + 2;                 // saute le marqueur \n\n
+                size_t np = pe;                     // saute marqueur \n\n
+                while (np < _dialog.size() &&
+                       (_dialog[np] == '\n' || _dialog[np] == ' ')) np++;
+                _dlg_page = np;
                 _dlg_chars = 0.f;
                 return;
             }
@@ -288,8 +316,8 @@ void World::action() {
         if (ox == tx && oz == tz) { best = &o; bi = (int)i; break; }
     }
     if (verbose)
-        printf("[act] p=(%d,%d) d=%d t=(%d,%d) objs=%zu\n",
-            ptx, ptz, _pdir, tx, tz, _objects.size());
+        printf("[act] f=%d p=(%d,%d) d=%d t=(%d,%d) objs=%zu\n",
+            _dbg_frames, ptx, ptz, _pdir, tx, tz, _objects.size());
     if (!best) {                                   // panneaux / événements BG
         // DS : FieldEvent_GetInteractedBgEventScript — uniquement la tuile
         // regardée (tx,tz). playerFacingDir : 0=N,1=E,2=W,3=S,4=ALL,5=W/E,6=N/S.
@@ -369,10 +397,15 @@ void World::choose_yesno(bool yes) {
 void World::menu_pick(int slot) {              // choix -> var dest -> reprend
     if (_vm.state() == ScriptVM::MENU) { _vm.menu_pick(slot); _vm.step(); }
 }
-const std::string& World::menu_text(int id) {  // texte d'entrée (banque courante)
+const std::string& World::menu_text(int id) {  // texte d'entrée
     static std::string unk = "?";
-    auto& b = _bank_msgs(_cur_bank);
-    return (id >= 0 && id < (int)b.size()) ? b[id] : unk;
+    // menu global (InitGlobalTextMenu) : TEXT_BANK_MENU_ENTRIES fixe (361) ;
+    // sinon banque du script courant.
+    auto& b = _bank_msgs(_vm.menu_bank >= 0 ? _vm.menu_bank : _cur_bank);
+    if (id < 0 || id >= (int)b.size()) return unk;
+    static std::string fmt;                     // {tag:arg} expansés (Buffer*)
+    fmt = _fmt_msg(b[id]);
+    return fmt;
 }
 const std::string& World::item_name(int id) {  // nom d'objet FR (pl_msg 392)
     static std::string unk = "???";
@@ -383,6 +416,30 @@ const std::string& World::species_name(int id) { // nom d'espèce FR (pl_msg 412
     static std::string unk = "???";
     auto& b = _bank_msgs(412);
     return (id >= 0 && id < (int)b.size()) ? b[id] : unk;
+}
+// stockage PC : déplacements équipe <-> boîtes (18 x 30, slots plats)
+void World::pc_move_party_to_box(int i, int box) {
+    if (i < 0 || i >= (int)_vm.party.size() || _vm.party.size() < 2)
+        return;                               // jamais le dernier Pokémon
+    int slot = -1;                            // boîte vue d'abord, sinon ordre
+    for (int s = box * 30; s < box * 30 + 30 && slot < 0; s++)
+        if (!_vm.pcbox[s].species) slot = s;
+    for (int s = 0; s < 540 && slot < 0; s++)
+        if (!_vm.pcbox[s].species) slot = s;
+    if (slot < 0) return;
+    _vm.pcbox[slot] = _vm.party[i];
+    _vm.party.erase(_vm.party.begin() + i);
+}
+void World::pc_move_box_to_party(int i) {
+    if (i < 0 || i >= 540 || !_vm.pcbox[i].species ||
+        _vm.party.size() >= 6) return;
+    _vm.party.push_back(_vm.pcbox[i]);
+    _vm.pcbox[i] = ScriptVM::PartyMon();
+}
+const char* World::box_name(int i) {
+    static char n[16];
+    snprintf(n, sizeof(n), "BOITE %d", i + 1);
+    return n;
 }
 const std::string& World::msg(int bank, int idx) {     // chaîne FR quelconque
     static std::string unk = "";
