@@ -2308,27 +2308,56 @@ int main(int argc, char** argv) {
                 ImGui::GetIO().DisplaySize,
                 IM_COL32(0, 0, 0, (int)(255 * post_fade)));
         }
-        // ── bandeau de zone (3 s à l'entrée de map) ────────────────────────
+        // ── bandeau de zone : vrai panneau area_win_gra qui descend du haut ──
         if (ist == I_OFF && ui_st == UI_NONE && world.banner_t() > 0 &&
             !world.label().empty() && !world.starter_open()) {
             int sw2, sh2;
             SDL_GetWindowSize(win, &sw2, &sh2);
-            float fade = world.banner_t() < 1.f ? world.banner_t() : 1.f;
-            ImVec2 sz = ImGui::CalcTextSize(world.label().c_str());
-            ImGui::SetNextWindowPos(ImVec2((sw2 - sz.x - 48) / 2, 30));
-            ImGui::SetNextWindowSize(ImVec2(sz.x + 48, sz.y + 22));
-            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, fade);
-            panel_push();
-            ImGui::Begin("##zone", nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                ImGuiWindowFlags_NoInputs);
-            accent_line();
-            ImGui::SetCursorPosX(24);
-            ImGui::Text("%s", world.label().c_str());
-            ImGui::End();
-            panel_pop();
-            ImGui::PopStyleVar();
+            g_uds = sh2 / 192.f;
+            g_udx = (sw2 - 256.f * g_uds) * 0.5f;
+            static GLuint sgntex[10] = {};
+            static int sgn_w = 128, sgn_h = 48, sgn_n = 0;
+            static bool sgn_try = false;
+            if (!sgn_try) {
+                sgn_try = true;
+                auto aw = db.narc("/arc/area_win_gra.narc");
+                if (aw) {
+                    int nv = (int)aw->count() / 2;
+                    if (nv > 10) nv = 10;
+                    for (int v = 0; v < nv; v++) {
+                        auto t = spr::parse_ncgr(aw->member(v * 2));
+                        auto pals = spr::parse_nclr(aw->member(v * 2 + 1));
+                        if (!t.ntiles || pals.empty()) continue;
+                        int tx = 16, ty = (t.ntiles + 15) / 16;
+                        if (auto im = spr::compose(t, 0, tx, ty,
+                                pals[0], true)) {
+                            sgntex[v] = ui_upload(*im);
+                            sgn_w = tx * 8; sgn_h = ty * 8;
+                            sgn_n = v + 1;
+                        }
+                    }
+                }
+                ds_font_ready(db);
+            }
+            int sv = 0;
+            if (const MapHeader* MHSG = db.header(world.header()))
+                sv = MHSG->mtype;
+            if (sv >= sgn_n) sv = 0;
+            if (sv < 0 || !sgntex[sv]) sv = 0;
+            // glissière : 0.3 s descente, maintien, 0.3 s remontée
+            float bt = world.banner_t();
+            float yy = 0.f;
+            if (bt > 2.7f) yy = -(float)sgn_h + sgn_h * (3.f - bt) / 0.3f;
+            else if (bt < 0.3f) yy = -(float)sgn_h * (1.f - bt / 0.3f);
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            float sx = (256.f - sgn_w) * 0.5f;
+            if (sgntex[sv])
+                dl->AddImage((ImTextureID)(intptr_t)sgntex[sv],
+                    dp(sx, yy), dp(sx + sgn_w, yy + sgn_h));
+            // nom centré dans la plaque, texte sombre DS
+            float tw_ = dt_text_w(world.label().c_str());
+            dt_text(dl, world.label().c_str(),
+                128.f - tw_ * 0.5f, yy + sgn_h * 0.5f - 6.f, 3);
         }
         // upload Image -> texture GL filtrée NEAREST (sûr en drawlist ImGui)
         auto& spr_upload = ui_upload;
