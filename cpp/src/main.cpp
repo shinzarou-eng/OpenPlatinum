@@ -2310,7 +2310,8 @@ int main(int argc, char** argv) {
         }
         // ── bandeau de zone : vrai panneau area_win_gra qui descend du haut ──
         if (ist == I_OFF && ui_st == UI_NONE && world.banner_t() > 0 &&
-            !world.label().empty() && !world.starter_open()) {
+            !world.label().empty() && !world.starter_open() &&
+            !world.battle().active) {
             int sw2, sh2;
             SDL_GetWindowSize(win, &sw2, &sh2);
             g_uds = sh2 / 192.f;
