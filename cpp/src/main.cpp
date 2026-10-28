@@ -2754,8 +2754,22 @@ int main(int argc, char** argv) {
                 float bfsc = uyb * 2.6f;
                 ds_text(dl, qt, scx(10), scy(4), bt_shell ? 3 : 0, bfsc);
             } else if (!choice) {
+                // DS : la boîte combat n'affiche que 2 lignes — les événements
+                // du tour s'accumulent dans bt.msg, on montre les derniers
                 float bfsc = uyb * 2.6f;
-                ds_text(dl, qt, mx + 30, my2 + cmdh * 0.5f - 14.f, 0, bfsc);
+                std::vector<std::string> lines;
+                for (size_t p0 = 0; p0 <= qt.size(); ) {
+                    size_t p1 = qt.find('\n', p0);
+                    lines.push_back(qt.substr(p0,
+                        p1 == std::string::npos ? p1 : p1 - p0));
+                    if (p1 == std::string::npos) break;
+                    p0 = p1 + 1;
+                }
+                while (lines.size() > 2) lines.erase(lines.begin());
+                float lh = g_dfont.cellH * bfsc + 6.f;
+                float ty = my2 + cmdh * 0.5f - lh * lines.size() * 0.5f;
+                for (size_t li = 0; li < lines.size(); li++)
+                    ds_text(dl, lines[li], mx + 30, ty + li * lh, 0, bfsc);
             }
             // ▼ centré en bas si message seul
             if (!choice && bt.st != Battle::PICKMOVE) {
