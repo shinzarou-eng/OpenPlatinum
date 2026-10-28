@@ -84,39 +84,6 @@ static const ImU32 C_ACCENT_V = IM_COL32(160, 107, 255, 255);  // violet
 static const ImU32 C_AMBER    = IM_COL32(255, 184, 77, 255);   // noms/curseur
 static const ImU32 C_SEL_BG   = IM_COL32(91, 141, 239, 40);
 static const ImU32 C_DIM      = IM_COL32(139, 152, 181, 255);
-// couleur de bordure par "TYPE de fenêtre" DS (option FENETRE 1-20) :
-// palette inspirée des cadres pl_winframe (bleu, vert, rouge, violet...)
-static ImU32 frame_col() {
-    static const ImU32 T[20] = {
-        IM_COL32( 58, 74,104,255), IM_COL32( 58, 74,104,255),
-        IM_COL32( 90,140,220,255), IM_COL32( 80,190,140,255),
-        IM_COL32(230,110, 90,255), IM_COL32(170,110,230,255),
-        IM_COL32(240,190, 80,255), IM_COL32( 90,200,220,255),
-        IM_COL32(200, 90,150,255), IM_COL32(130,170,255,255),
-        IM_COL32(110,110,120,255), IM_COL32(180,140, 90,255),
-        IM_COL32( 90,150, 90,255), IM_COL32(220, 80, 80,255),
-        IM_COL32(140, 90,200,255), IM_COL32(230,170, 60,255),
-        IM_COL32( 70,180,200,255), IM_COL32(190, 90,120,255),
-        IM_COL32(100,130,200,255), IM_COL32(150,150,160,255),
-    };
-    return T[g_opts.frame >= 0 && g_opts.frame < 20 ? g_opts.frame : 0];
-}
-static void panel_push() {
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, C_PANEL_BG);
-    ImGui::PushStyleColor(ImGuiCol_Border, frame_col());
-    ImGui::PushStyleColor(ImGuiCol_Text, C_TEXT);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14, 10));
-}
-static void panel_pop() { ImGui::PopStyleVar(3); ImGui::PopStyleColor(3); }
-// liseré bleu->violet en haut du panneau courant
-static void accent_line() {
-    ImVec2 p = ImGui::GetWindowPos();
-    ImGui::GetWindowDrawList()->AddRectFilledMultiColor({p.x, p.y},
-        {p.x + ImGui::GetWindowWidth(), p.y + 2},
-        C_ACCENT_B, C_ACCENT_V, C_ACCENT_V, C_ACCENT_B);
-}
 // simule une pression clavier (clics souris -> logique touches)
 static void push_key(SDL_Keycode k) {
     SDL_Event kev{}; kev.type = SDL_EVENT_KEY_DOWN;
@@ -3997,20 +3964,22 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        // ── PokemonPicture (0x0208) : espèce montrée en encart ─────────────
+        // ── PokemonPicture (0x0208) : vrai sprite dans fenêtre standard DS ──
         if (int ps = world.pic_species()) {
             int sw2, sh2;
             SDL_GetWindowSize(win, &sw2, &sh2);
-            ImGui::SetNextWindowPos(ImVec2(sw2 - 180.f, sh2 - 260.f));
-            ImGui::SetNextWindowSize(ImVec2(160.f, 0.f));
-            panel_push();
-            ImGui::Begin("##pokepic", nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
-            accent_line();
-            ImGui::Text("%s", world.species_name(ps).c_str());
-            ImGui::End();
-            panel_pop();
+            g_uds = sh2 / 192.f;
+            g_udx = (sw2 - 256.f * g_uds) * 0.5f;
+            ds_font_ready(db);
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            // fenêtre standard centrée (9,4 taille 14x14 tuiles)
+            dt_stdframe(dl, db, 9, 4, 14, 14);
+            uint32_t pt = world.poke_tex(ps, 0,
+                (int)(SDL_GetTicks() / 60) % 2);
+            if (pt)
+                dl->AddImage((ImTextureID)(intptr_t)pt,
+                    dp(88, 52), dp(168, 132));
+            dt_text(dl, world.species_name(ps), 84, 136, 0);
         }
         // ── fondu écran (FadeScreen) ───────────────────────────────────────
         {
