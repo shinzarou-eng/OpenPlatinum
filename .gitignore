@@ -1,0 +1,66 @@
+# ROM & assets — never commit
+rom/
+*.nds
+*.sdat
+_arm9.bin
+data_headers.bin
+_shots/
+*.ppm
+*.bmp
+*.tga
+
+# generated data (regenerate with tools/)
+cpp/data/headers.bin
+cpp/builddir/
+
+# reference decomp — keep a local checkout, not in the repo
+_ref_pokeplatinum/
+_ref_platinum_pc/
+
+# scratch / probes / dumps
+_*
+tmp_*.json
+__pycache__/
+
+# build artifacts
+*.exe
+*.dll
+*.pck
+*.o
+*.obj
+*.bin.tmp
+_ccache/
+*.log
+save.dat
+
+# abandoned godot prototype — dead code, stays local
+.godot/
+scenes/
+scripts/
+autoload/
+project.godot
+export_presets.cfg
+data/
+*.ctex
+*.import
+*.uid
+
+# local build dirs / caches
+cpp/.ccache/
+cpp/tmp/
+cpp/imgui.ini
+
+# vendored toolchain/deps — download separately (see README)
+cpp/tools/
+
+# root-level scratch (dumps, one-off probes)
+/*.py
+/tools_*
+/src_op_table.inc
+/tree.json
+/*.asm
+tmp/
+options.cfg
+imgui.ini
+_ref_web/
+mockup/
