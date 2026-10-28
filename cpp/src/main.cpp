@@ -2189,7 +2189,9 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // portrait Sorbier : monte depuis le bas + bouge en parlant
+            // portrait Sorbier : monte depuis le bas + bouge en parlant.
+            // menu aide affiché à droite (tuile 17) -> prof décalé à gauche
+            // comme sur DS (sinon la fenêtre le couvre)
             if (ist == I_SEQ || ist == I_HELP || ist == I_BALL) {
                 float rise = fminf(1.f, it / 0.45f);
                 float off = (1.f - rise) * (1.f - rise) * top_h * 0.5f;
@@ -2198,7 +2200,10 @@ int main(int argc, char** argv) {
                 float amp = speaking ? 6.f : 2.f;
                 float spd = speaking ? 7.5f : 1.6f;
                 float bob = fabsf(sinf(t_gui * spd)) * -amp;
-                img_b(4, io.x * 0.5f, top_h - top_h * 0.02f + off + bob,
+                float gx = top_h / 192.f;              // échelle DS verticale
+                float sx = io.x * 0.5f;
+                if (ist == I_HELP) sx -= 64.f * gx;    // ~tuile 8
+                img_b(4, sx, top_h - top_h * 0.02f + off + bob,
                       top_h * 0.0058f);
             }
             // boîte de message DS : cadre 18 tuiles, fond blanc, NFGR.
