@@ -116,21 +116,41 @@ std::vector<Cell> parse_ncer(const Bytes& d0) {
         if (tag == 0x4345424B || tag == 0x4B424543) {   // CEBK/KBEC
             const uint8_t* b = d.data() + p + 8;
             int ncells = b[0] | (b[1] << 8);
-            // en-tête KBEC = 0x18 octets ; records 16B : nOam,attr,oamOff,bounds
+            // en-tête KBEC = 0x18 octets. Deux variantes de records :
+            // 16B (nOam,attr,oamOff,bounds i16x4) ou 8B (nOam,attr,oamOff,
+            // bounds déduits des OAM). On détecte en validant oamOff.
+            auto valid = [&](int rs) {
+                if (b + 0x18 + (size_t)ncells * rs > d.data() + d.size())
+                    return false;
+                size_t oamreg = (d.data() + d.size()) - (b + 0x18 + ncells * rs);
+                for (int i = 0; i < ncells; i++) {
+                    const uint8_t* cr = b + 0x18 + (size_t)i * rs;
+                    int no = cr[0] | (cr[1] << 8);
+                    uint32_t oo = cr[4] | (cr[5] << 8) | (cr[6] << 16) |
+                        ((uint32_t)cr[7] << 24);
+                    if (no > 128 || oo >= oamreg) return false;
+                }
+                return true;
+            };
+            int recsz = valid(16) ? 16 : (valid(8) ? 8 : 16);
             const uint8_t* cb = b + 0x18;
-            const uint8_t* oamb = cb + ncells * 16;
+            const uint8_t* oamb = cb + ncells * recsz;
             static const int SZ[4][3] = {{8,8,8},{16,16,16},{32,32,32},{64,64,64}};
             for (int i = 0; i < ncells; i++) {
-                const uint8_t* cr = cb + i * 16;
-                if (cr + 16 > d.data() + d.size()) break;
+                const uint8_t* cr = cb + i * recsz;
+                if (cr + recsz > d.data() + d.size()) break;
                 Cell c;
                 int noam = cr[0] | (cr[1] << 8);
                 uint32_t oamo = cr[4] | (cr[5] << 8) | (cr[6] << 16) |
                     ((uint32_t)cr[7] << 24);
-                c.maxx = (int16_t)(cr[8] | (cr[9] << 8));
-                c.maxy = (int16_t)(cr[10] | (cr[11] << 8));
-                c.minx = (int16_t)(cr[12] | (cr[13] << 8));
-                c.miny = (int16_t)(cr[14] | (cr[15] << 8));
+                if (recsz == 16) {
+                    c.maxx = (int16_t)(cr[8] | (cr[9] << 8));
+                    c.maxy = (int16_t)(cr[10] | (cr[11] << 8));
+                    c.minx = (int16_t)(cr[12] | (cr[13] << 8));
+                    c.miny = (int16_t)(cr[14] | (cr[15] << 8));
+                } else {                       // 8B : bounds = union des OAM
+                    c.minx = c.miny = 32767; c.maxx = c.maxy = -32768;
+                }
                 for (int j = 0; j < noam; j++) {
                     const uint8_t* r = oamb + oamo + j * 6;
                     if (r + 6 > d.data() + d.size()) break;
@@ -151,7 +171,15 @@ std::vector<Cell> parse_ncer(const Bytes& d0) {
                         o.w = W[sz]; o.h = H[sz]; }
                     o.tile = a2 & 0x3FF; o.pal = (a2 >> 12) & 0xF;
                     c.oams.push_back(o);
+                    if (recsz == 8) {           // bounds = union des OAM
+                        if (o.x < c.minx) c.minx = o.x;
+                        if (o.y < c.miny) c.miny = o.y;
+                        if (o.x + o.w > c.maxx) c.maxx = o.x + o.w;
+                        if (o.y + o.h > c.maxy) c.maxy = o.y + o.h;
+                    }
                 }
+                if (recsz == 8 && c.maxx < c.minx)
+                    c.minx = c.miny = c.maxx = c.maxy = 0;
                 out.push_back(std::move(c));
             }
             return out;

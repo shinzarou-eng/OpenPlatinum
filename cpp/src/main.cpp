@@ -1173,7 +1173,11 @@ int main(int argc, char** argv) {
             case 4: ist = I_HELP; ihelp = 0; iset_msg(1); break;
             case 5: ist = I_BALL; iset_msg(17); break;
             case 6: ist = I_GENDER; iset_msg(21); break;
-            case 7: ist = I_NAME; iname_who = 0; iset_msg(24); break;
+            case 7: ist = I_NAME; iname_who = 0; iset_msg(24);
+                    for (int i = 1; i + 1 < argc; i++)
+                        if (!strcmp(argv[i], "--gender"))
+                            igender = atoi(argv[i + 1]);
+                    break;
             case 8: ist = I_NAME; iname_who = 1; iset_msg(28); break;
             case 9: ipush({30}, A_DONE); break;
             default: ipush({0, 1}, A_HELP); break;
@@ -2021,7 +2025,9 @@ int main(int argc, char** argv) {
             ImVec4 scrT = {0, 0, io.x, top_h};
             ImVec4 scrB = {0, top_h, io.x, io.y};
             // écran du bas : balle / aides boutons, aspect 4:3 centré
+            // sur le dégradé bleu (pas de bandes noires)
             if (slide >= 0) {
+                scr_img(2, scrB, false);
                 scr_img(slide, scrB, true);
                 bg->AddRectFilled({0, top_h - 2}, {io.x, top_h + 2},
                     IM_COL32(255, 184, 77, 200));      // séparateur
@@ -2093,14 +2099,25 @@ int main(int argc, char** argv) {
                 if (nbt)
                     bg->AddImage((ImTextureID)(uintptr_t)nbt,
                         dp(0, 0), dp(256, 192));
-                // nom saisi dans le champ blanc + curseur clignotant
+                // icône du champ : sprite chibi du perso (pos DS 24,8)
+                {
+                    int kind = iname_who ? 2 : igender;
+                    int fr = (int)(ImGui::GetTime() * 6.f);
+                    uint32_t ic = world.namein_icon_tex(kind, fr);
+                    int iw = world.namein_icon_sz[0],
+                        ih = world.namein_icon_sz[1];
+                    if (ic && iw > 0)
+                        bg->AddImage((ImTextureID)(uintptr_t)ic,
+                            dp(24, 8), dp(24 + iw, 8 + ih));
+                }
+                // nom saisi dans le champ : fenêtre DS tuile (10,3) = x80,
+                // à droite de l'icône, + curseur clignotant
                 {
                     std::string nm = iname;
                     float nw2 = dt_text_w(nm);
-                    dt_text(bg, nm, (256.f - nw2) * 0.5f, 14.f, 0);
+                    dt_text(bg, nm, 80.f, 24.f, 0);
                     if ((int)(ImGui::GetTime() * 2.f) & 1)
-                        dt_text(bg, "_", (256.f - nw2) * 0.5f + nw2 + 1.f,
-                            14.f, 0);
+                        dt_text(bg, "_", 80.f + nw2 + 1.f, 24.f, 0);
                 }
                 // grille clavier de la page courante (membres 6-9 de namein)
                 uint32_t kt = world.intro_tex(14 + ikb_page);

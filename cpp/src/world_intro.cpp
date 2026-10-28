@@ -118,6 +118,36 @@ void World::intro_set_pframe(int f) {
     }
 }
 
+// ── icône du champ de saisie (namein.narc) : NANR 48=garçon (cells 45-47),
+// 49=fille (cells 49-51), 51=rival (cells 55-57) ; sprite à la pos DS (24,8) ──
+uint32_t World::namein_icon_tex(int kind, int frame) {
+    static uint32_t c[3][4] = {};
+    static int cw[3], ch[3];
+    if (kind < 0 || kind > 2) return 0;
+    static const int FIRST[3] = {45, 49, 55};
+    static const int SEQ[4] = {0, 1, 2, 1};      // NANR : boucle 0,1,2,1
+    frame = SEQ[frame & 3];
+    if (!c[kind][frame]) {
+        std::string p = "/resource/" + res_dir(_db) + "/nameinput/namein.narc";
+        auto n = _db->narc(p);
+        if (n) {
+            auto g = spr::parse_ncgr(n->member(10));
+            auto pals = spr::parse_nclr(n->member(1));
+            auto cells = spr::parse_ncer(n->member(12));
+            int ci = FIRST[kind] + frame;
+            if (ci < (int)cells.size()) {
+                auto im = spr::render_cell(g, cells[ci], pals);
+                if (im) {
+                    cw[kind] = im->w; ch[kind] = im->h;
+                    c[kind][frame] = rnd::upload_tex(*im);
+                }
+            }
+        }
+    }
+    namein_icon_sz[0] = cw[kind]; namein_icon_sz[1] = ch[kind];
+    return c[kind][frame];
+}
+
 // ── écran titre : scène 3D Giratina (BMD0/BCA0 de titledemo.narc) ────────────
 void World::draw_title(float asp) {
     // type local : PropInst est privé à World -> accessible ici seulement
@@ -140,18 +170,21 @@ void World::draw_title(float asp) {
                 PropInst pi;
                 pi.pos = pos; pi.ry = ry; pi.scale = sc; pi.mdl = model.get();
                 for (auto& mg : model->meshes) {
+                    // ignore le plan "monde distordu" géant ( décor de cutscene )
+                    Vec3 mnv{1e9f,1e9f,1e9f}, mxv{-1e9f,-1e9f,-1e9f};
+                    for (auto& pr : mg.prims) for (auto& v : pr.v) {
+                        mnv.x=fminf(mnv.x,v.p.x); mnv.y=fminf(mnv.y,v.p.y);
+                        mnv.z=fminf(mnv.z,v.p.z); mxv.x=fmaxf(mxv.x,v.p.x);
+                        mxv.y=fmaxf(mxv.y,v.p.y); mxv.z=fmaxf(mxv.z,v.p.z);
+                    }
+                    if (mxv.x - mnv.x > 800.f || mxv.z - mnv.z > 800.f)
+                        continue;
                     std::vector<Vec3> ct; Vec3 o{0,0,0};
                     auto buf = _tris(mg, o, &ct);
                     bool alpha = false; int polyA = 31;
                     uint32_t t = _mat_tex(mg.matdef, model->textures,
                                           &alpha, &polyA);
                     if (verbose) {
-                        Vec3 mnv{1e9f,1e9f,1e9f}, mxv{-1e9f,-1e9f,-1e9f};
-                        for (auto& pr : mg.prims) for (auto& v : pr.v) {
-                            mnv.x=fminf(mnv.x,v.p.x); mnv.y=fminf(mnv.y,v.p.y);
-                            mnv.z=fminf(mnv.z,v.p.z); mxv.x=fmaxf(mxv.x,v.p.x);
-                            mxv.y=fmaxf(mxv.y,v.p.y); mxv.z=fmaxf(mxv.z,v.p.z);
-                        }
                         printf("[title] mesh mat=%s tex=%s -> id=%u dif=%06X poly=%08X verts=%zu bbox %.0f..%.0f %.0f..%.0f %.0f..%.0f\n",
                             mg.matdef.name.c_str(), mg.matdef.tex_name.c_str(),
                             t, mg.matdef.dif & 0xFFFFFF, mg.matdef.poly,
@@ -206,12 +239,10 @@ void World::draw_title(float asp) {
                 g_ts.props[0].anm->nframe, g_ts.props[0].anm->nodes.size());
         }
     }
-    // caméra DS : pos (0,192,600)->(-64,192,484), cible (0,100,-18),
-    // FOV ~16°, animée sur 60 frames (coords ~x4,8 par unité modèle)
-    // caméra DS : pos (0,192,600) -> (-64,192,484), cible (0,100,-18), 60 fr
+    // caméra : drift DS ×1.55 autour du centre animé de Giratina (-100,88,57)
     float f = fminf(1.f, g_ts.t / 1.f);
-    Vec3 eye{-64.f * f, 192.f, 600.f - 116.f * f};
-    Vec3 tgt{0.f, 100.f, -18.f};
+    Vec3 tgt{-100.f, 88.f, 57.f};
+    Vec3 eye{tgt.x - 99.f * f, tgt.y + 143.f, tgt.z + 958.f - 180.f * f};
     Mat4 view = Mat4::look_at(eye, tgt, {0, 1, 0});
     Mat4 proj = Mat4::perspective(16.f * 0.01745329252f, asp, 8.f, 8192.f);
     Mat4 mvp = proj.mul(view);
@@ -298,6 +329,30 @@ void World::draw_title(float asp) {
     // écran titre stable : la DS ne dessine que Giratina (+ fond 2D vortex) ;
     // le portail et le visage ne servent que pendant la cutscene d'ouverture
     if (!g_ts.props.empty()) {
+        if (verbose && !g_ts.props[0].anm_cur.empty()) {
+            static bool vb = false;
+            if (!vb && g_ts.t * 60 > 90) {
+                vb = true;
+                const PropInst& p = g_ts.props[0];
+                Vec3 mn{1e9f,1e9f,1e9f}, mx{-1e9f,-1e9f,-1e9f};
+                for (size_t i = 0; i < p.meshes.size(); i++) {
+                    Mat4 d = _prop_node_delta(p, (int)i);
+                    for (auto& pr : p.mdl->meshes[i].prims)
+                        for (auto& v : pr.v) {
+                            const float* m = d.m;
+                            Vec3 w{m[0]*v.p.x+m[4]*v.p.y+m[8]*v.p.z+m[12],
+                                   m[1]*v.p.x+m[5]*v.p.y+m[9]*v.p.z+m[13],
+                                   m[2]*v.p.x+m[6]*v.p.y+m[10]*v.p.z+m[14]};
+                            mn.x=fminf(mn.x,w.x); mn.y=fminf(mn.y,w.y);
+                            mn.z=fminf(mn.z,w.z); mx.x=fmaxf(mx.x,w.x);
+                            mx.y=fmaxf(mx.y,w.y); mx.z=fmaxf(mx.z,w.z);
+                        }
+                }
+                printf("[title] ANIM bbox %.0f..%.0f %.0f..%.0f %.0f..%.0f  ctr %.0f,%.0f,%.0f\n",
+                    mn.x,mx.x, mn.y,mx.y, mn.z,mx.z,
+                    (mn.x+mx.x)/2,(mn.y+mx.y)/2,(mn.z+mx.z)/2);
+            }
+        }
         drawp(g_ts.props[0], false);
         drawp(g_ts.props[0], true);
     }

@@ -137,6 +137,8 @@ public:
     void intro_set_frame(int f);                       // pose portrait Sorbier
     void intro_set_pframe(int f);                      // pose Lucas/Dawn (0-3)
     int _intro_frame = 0, _intro_pframe = 0;
+    uint32_t namein_icon_tex(int kind, int frame);     // icône champ : 0=♂ 1=♀ 2=rival
+    int namein_icon_sz[2] = {};
     std::string msg_fmt(int bank, int idx) {           // message prêt à afficher
         auto& b = _bank_msgs(bank);
         return (idx >= 0 && idx < (int)b.size()) ? _fmt_msg(b[idx]) : std::string();
