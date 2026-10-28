@@ -144,7 +144,7 @@ static const ImU32 DS_FG[8]  = {IM_COL32(80,80,88,255), IM_COL32(232,32,16,255),
     IM_COL32(248,248,248,255), IM_COL32(216,216,216,255), IM_COL32(248,248,248,255)};
 static const ImU32 DS_SH[8]  = {IM_COL32(160,160,168,255), IM_COL32(248,168,184,255),
     IM_COL32(120,184,232,255), IM_COL32(120,120,120,255), IM_COL32(160,230,160,255),
-    IM_COL32(248,184,192,255), IM_COL32(144,208,248,255), IM_COL32(0,0,0,255)};
+    IM_COL32(88,88,96,255), IM_COL32(144,208,248,255), IM_COL32(0,0,0,255)};
 static spr::Nfgr g_dfont;
 static GLuint g_fatlas[8] = {};
 static const int g_fss = 4;                     // atlas suréchantillonné
@@ -1936,10 +1936,13 @@ int main(int argc, char** argv) {
         if (ist == I_TITLE || ist == I_MENU)
             world.draw_title(asp);          // scène 3D Giratina (titledemo)
         else if (ist == I_OFF) {
-            rnd::set_clear(0.53f, 0.67f, 0.85f);   // ciel du monde
-            if (world.starter_open())
+            // DS : ciel en extérieur, noir derrière la géométrie en intérieur
+            if (world.cell_count() <= 1) rnd::set_clear(0.f, 0.f, 0.f);
+            else rnd::set_clear(0.53f, 0.67f, 0.85f);
+            if (world.starter_open()) {
+                world.draw(proj, sw, sh);   // DS : la map reste derrière
                 world.draw_starter(asp);    // vraie scène 3D ev_pokeselect
-            else world.draw(proj, sw, sh);
+            } else world.draw(proj, sw, sh);
         }
 
         // ImGui
@@ -2385,7 +2388,7 @@ int main(int argc, char** argv) {
                 {IM_COL32(0,112,248,255),  IM_COL32(120,184,232,255)}, // 2 bleu
                 {IM_COL32(0,0,0,255),      IM_COL32(120,120,120,255)}, // 3 noir
                 {IM_COL32(40,168,32,255),  IM_COL32(160,230,160,255)}, // 4 vert
-                {IM_COL32(248,248,248,255),IM_COL32(248,184,192,255)}, // 5 blanc
+                {IM_COL32(248,248,248,255),IM_COL32(88,88,96,255)},    // 5 blanc
                 {IM_COL32(216,216,216,255),IM_COL32(144,208,248,255)}, // 6 gris
                 {IM_COL32(248,248,248,255),IM_COL32(0,0,0,255)},       // 7 blanc
             };
@@ -2415,8 +2418,9 @@ int main(int argc, char** argv) {
                     w += (cp == ' ') ? adv(0) : adv(g); }
                 return w;
             };
-            // wrap glouton par mots à la largeur de la fenêtre DS (27 tuiles)
-            float wrapw = 27 * 8.f;
+            // wrap glouton par mots : intérieur de la fenêtre moins marges
+            // DS (texte à +8 px du bord gauche, ~8 px avant le bord droit)
+            float wrapw = 27 * 8.f - 16.f;
             float lh = dsf ? (float)g_dfont.cellH : 16.f;
             struct Ln { size_t b, e; };
             std::vector<Ln> lines;
@@ -2436,7 +2440,7 @@ int main(int argc, char** argv) {
             lines.push_back({lstart, dtx.size()});
             // le texte démarre à l'origine de la fenêtre (tuiles 2,19)
             for (size_t li = 0; li < lines.size(); li++) {
-                float x = 16.f, y = 152.f + li * lh;
+                float x = 24.f, y = 152.f + li * lh;
                 for (size_t k = lines[li].b; k < lines[li].e; ) {
                     size_t k0 = k;
                     int cp; int g = gf_glyph(k, cp);      // avance k
@@ -3303,7 +3307,7 @@ int main(int argc, char** argv) {
                 {
                     std::string pn = world.msg(395, bag_pocket);
                     float pw = dt_text_w(pn);
-                    dt_text(dl, pn, 48 - pw / 2, 106, 5);
+                    dt_text(dl, pn, 48 - pw / 2, 106, 0);   // sombre sur bande claire
                 }
                 // ── liste objets : fenêtre (14,0,17,18), 9 lignes pitch 16 ──
                 const float LX = 112, LY = 0, LW = 136;
@@ -3336,8 +3340,7 @@ int main(int argc, char** argv) {
                         else
                             dl->AddRect(ra, rb, B_ORANGE, 3.f, 0, 2.f);
                     }
-                    dt_text(dl, world.item_name(id), LX + 4, ry + 1,
-                        sel ? 1 : 0);
+                    dt_text(dl, world.item_name(id), LX + 4, ry + 1, 0);
                     if (bag_pocket != 7) {
                         char q[16]; snprintf(q, sizeof(q), "x%d",
                             items[i].second);
@@ -3777,10 +3780,11 @@ int main(int argc, char** argv) {
                         if (sel) push_key(SDLK_RIGHT);
                         else menu_sel = i;
                     }
-                    // étiquette blanche, valeur à x=108 (DS CHOICES_X=100+8)
+                    // étiquette blanche, valeur alignée à droite (DS)
                     dt_text(dl, rows[i].lab, 12, ry, 5);
                     if (!rows[i].val.empty())
-                        dt_text(dl, rows[i].val, 108, ry, sel ? 1 : 6);
+                        dt_text(dl, rows[i].val,
+                            240 - dt_text_w(rows[i].val), ry, sel ? 1 : 6);
                 }
                 // description : boîte message DS (2,19,27,4)
                 dt_msgbox(dl, db, 2, 19, 27, 4);
