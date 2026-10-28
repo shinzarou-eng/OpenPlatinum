@@ -374,8 +374,15 @@ static bool cur_ready(Nds& db) {
     auto nc = spr::parse_ncgr(wn->member(22));
     auto wp = spr::parse_nclr(wn->member(25 + (g_opts.frame & 19)));
     if (nc.ntiles < 12 || wp.empty()) return false;
-    // composé en grille 2x6 : chaque frame 16x16 empilée
-    auto im = spr::compose(nc, 0, 2, 6, wp[0], true);
+    // composé en grille 2x6 : chaque frame 16x16 empilée.
+    // l'asset remplit la flèche en blanc (idx1) — invisible sur boîte blanche ;
+    // sur DS la flèche se lit sombre sur fond clair -> palette locale adaptée.
+    std::vector<RGBAf> cpal = wp[0];
+    if (cpal.size() > 2) {
+        cpal[1] = {64, 88, 112, 255};      // corps de la flèche sombre
+        cpal[2] = {248, 248, 248, 255};    // liseré blanc
+    }
+    auto im = spr::compose(nc, 0, 2, 6, cpal, true);
     if (!im) return false;
     g_curtex = ui_upload(*im);
     return true;
