@@ -58,6 +58,12 @@ public:
     std::string      loc_name(int label) const;   // bank 433 pl_msg
     std::string      mapname(int idx) const;      // maptable/mapname.bin
 
+    // table MapHeader réelle de l'arm9 (24 B/enregistrement) :
+    // musiques jour/nuit (seq SDAT) + type de caméra
+    int  map_music(int hdr_id, bool night) const;       // -1 si nd
+    int  map_camera(int hdr_id) const;                  // -1 si nd
+    const Bytes& rom() const { return _rom; }
+
     const std::string& game_title() const { return _title; }
     const std::string& game_code() const { return _code; }
     int file_count() const { return (int)_fat.size(); }
@@ -82,6 +88,7 @@ public:
     static constexpr const char* P_BMANIME="/arc/bm_anime.narc";
     static constexpr const char* P_BMANILIST="/arc/bm_anime_list.narc";
     static constexpr const char* P_FLDTANIME="/data/fldtanime.narc";
+    static constexpr const char* P_SDAT  = "/data/sound/pl_sound_data.sdat";
     static constexpr const char* P_AREALIGHT="/data/arealight.narc";
 
 private:
@@ -98,6 +105,8 @@ private:
     std::vector<const MapHeader*> _hdrs;
     std::vector<const char*> _hdrnames;
     bool _hdr_ok = false;
+    mutable size_t _hdr24off = 0;       // offset arm9 de la table 24B (0 = nd)
+    mutable int    _hdr24n = 0;
 
     void _walk_dir(int dir_idx, const std::string& path, int& fid_counter);
     void _load_headers(const std::string& bin_path);

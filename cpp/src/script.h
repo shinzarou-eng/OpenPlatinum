@@ -11,7 +11,7 @@ class ScriptVM {
 public:
     struct OpDef { uint16_t op; const char* name; const char* widths; };
     enum St { DONE, RUN, MSG, WAITBTN, YESNO, MOVE, WAITTIME, WAITFADE, MENU,
-              STARTER, BATTLE, SHOP, WAITANIM };
+              STARTER, BATTLE, SHOP, WAITANIM, WAITSND };
 
     bool load(const Bytes* file);            // membre scr_seq (réf stable)
     bool load_std(const Bytes* file);        // scripts_common (CallStandard)
@@ -100,6 +100,9 @@ public:
     int  wait_t = 0;                          // compteur WaitTime (frames)
     bool close_btn = false;                   // CloseMsgOnKeyPress : touche -> ferme la boîte
     int  wait_anim = -1;                      // tag de l'anim de porte attendue
+    int  wait_snd = 0;                        // WAITSND : 1=SE 2=cri 3=fanfare
+    std::function<int(int op,int a)> cb_audio;  // ops son (0x49-0x57, 0xEA)
+    std::function<int(int kind)>   cb_sndbusy;  // 1 si le canal attendu joue
     // menu multi (Multi/ShowMenu) : préparé par World, résultat -> menu_dest
     int  menu_dest = 0, menu_cancel = 0;
     std::vector<std::pair<int,int>> menu_items; // (slot -> id msg banque courante)

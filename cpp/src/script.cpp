@@ -218,10 +218,22 @@ ScriptVM::St ScriptVM::step() {
         case 0x0043: case 0x0047:                         // ShowMenu/ShowListMenu
             _st = MENU; break;
         case 0x003C: break;                               // ShowStartMenu (menu X)
-        case 0x0049: case 0x004A: case 0x004B: break;     // PlaySE/WaitSE (audio)
-        case 0x0050: case 0x0051: break;                // PlayMusic/StopMusic (stub)
-        case 0x0052: case 0x0053: case 0x0054: break;     // PlayDefault/Cmd_53/FadeOutBGM
-        case 0x0057: break;                               // SetBGM
+        case 0x0049:                                      // PlaySE seq
+            if (cb_audio) cb_audio(0x49, (int)_arg[0]); break;
+        case 0x004A:                                      // StopSE seq
+            if (cb_audio) cb_audio(0x4A, (int)_arg[0]); break;
+        case 0x004B: wait_snd = 1; _st = WAITSND; break;  // WaitSE
+        case 0x0050:                                      // PlayMusic seq
+            if (cb_audio) cb_audio(0x50, (int)_arg[0]); break;
+        case 0x0051:                                      // StopMusic
+            if (cb_audio) cb_audio(0x51, 0); break;
+        case 0x0052:                                      // PlayDefaultBGM
+            if (cb_audio) cb_audio(0x52, 0); break;
+        case 0x0053: break;                               // (réservé)
+        case 0x0054:                                      // FadeOutBGM frames
+            if (cb_audio) cb_audio(0x54, (int)_arg[0]); break;
+        case 0x0057:                                      // SetBGM seq (mémorisé)
+            if (cb_audio) cb_audio(0x57, (int)_arg[0]); break;
         case 0x00A1: break;                               // ReturnToField (suite)
         case 0x00BC:                                      // FadeScreen t,f,type,col
             if (cb_fade) cb_fade((int)_arg[0], (int)_arg[1],
@@ -357,9 +369,13 @@ ScriptVM::St ScriptVM::step() {
         case 0x0078: set_var((int)_arg[0], coins); break; // GetCoinsAmount
         case 0x0079: coins += _flex((int)_arg[0]); break; // AddCoins
         case 0x007A: coins -= _flex((int)_arg[0]); if (coins < 0) coins = 0; break; // SubtractCoins
-        // -- audio (stubs, SDAT plus tard) --
-        case 0x004C: case 0x004D: break;                  // PlayCry/WaitCry
-        case 0x004E: case 0x004F: break;                  // PlayFanfare/WaitFanfare
+        // -- audio : cris + fanfares (SDAT) --
+        case 0x004C:                                      // PlayCry espèce,forme?
+            if (cb_audio) cb_audio(0x4C, (int)_arg[0]); break;
+        case 0x004D: wait_snd = 2; _st = WAITSND; break;  // WaitCry
+        case 0x004E:                                      // PlayFanfare seq
+            if (cb_audio) cb_audio(0x4E, (int)_arg[0]); break;
+        case 0x004F: wait_snd = 3; _st = WAITSND; break;  // WaitFanfare
         // -- poketch --
         case 0x0131: sys_poketch = true; break;           // EnablePoketch
         case 0x0132: set_var((int)_arg[0], sys_poketch ? 1 : 0); break; // CheckPoketchEnabled
@@ -495,7 +511,8 @@ ScriptVM::St ScriptVM::step() {
         case 0x00E9: {                                  // CheckIsTrainerDoubleBattle
             int tid = cur_script - (cur_script < 5000 ? 2999 : 4999);
             set_var((int)_arg[0], cb_trdata ? (cb_trdata(tid) != 0) : 0); break; }
-        case 0x00EA: break;                             // PlayTrainerEncounterBGM (audio nd)
+        case 0x00EA:                                    // PlayTrainerEncounterBGM
+            if (cb_audio) cb_audio(0xEA, (int)_arg[0]); break;
         case 0x00EC: set_var((int)_arg[0], !battle_lost); break;  // CheckWonBattle
         case 0x00ED: set_var((int)_arg[0], battle_lost); break;   // CheckLostBattle
         case 0x00EE: set_var((int)_arg[0], 1); break;     // CheckHasTwoAliveMons (nd)

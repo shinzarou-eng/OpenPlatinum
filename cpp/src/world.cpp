@@ -4,9 +4,11 @@ Opts g_opts;                                // options globales (menu Options)
 #include "world_internal.h"
 #include "msg.h"
 #include "spr.h"
+#include "sdat.h"
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <algorithm>
 
 // ── init / chargement ─────────────────────────────────────────────────────────
@@ -435,13 +437,67 @@ void World::_set_header(int header_id, bool init) {
         if (set) { _vm.set_flag(f, true); return 1; }
         return _vm.flag(f) ? 1 : 0;
     };
+    _vm.cb_audio   = [this](int op,int a) { return audio_op(op,a); };
+    _vm.cb_sndbusy = [this](int k) { return audio_busy(k); };
     _label = _db->loc_name(H->label);
     if (getenv("WARPDBG")) fprintf(stderr, "[label] hdr=%d label=%d -> '%s'\n",
         header_id, H->label, _label.c_str());
     _mapname = _db->header_name(header_id);
+    // BGM de zone : table MapHeader 24B de l'arm9 (jour/nuit)
+    _mus_day = _db->map_music(header_id, false);
+    _mus_night = _db->map_music(header_id, true);
+    if (_mus_night < 0) _mus_night = _mus_day;
+    _cam_type = _db->map_camera(header_id);
+    _bgm_override = -1;                       // nouvelle zone : reset SetBGM
+    _music_update();
     // DS map_name_popup : windowID==0 ou IsBuilding (INDOORS/POKECENTER) -> pas de popup
     _banner_t = (H->win == 0 || H->mtype == 4 || H->mtype == 5) ? 0.f : 1.5f;
     if (init) _run_init();
+}
+
+// ---- audio : horloge DS (nuit 20h-4h), routage des ops de script ----------
+bool World::is_night() const {
+    time_t tt = time(nullptr); struct tm lt{};
+    localtime_s(&lt, &tt);
+    return lt.tm_hour >= 20 || lt.tm_hour < 4;
+}
+
+void World::_music_update() {
+    if (!_snd || _btl.active) return;
+    if (_bgm_victory) {                         // jingle victoire -> fin -> zone
+        if (_snd->player_busy(7)) return;
+        _bgm_victory = false; _bgm_cur = -2;
+    }
+    int want = _bgm_override >= 0 ? _bgm_override : bgm_seq(is_night());
+    if (want != _bgm_cur) { _bgm_cur = want; if (want >= 0) _snd->music(want); }
+}
+
+int World::audio_op(int op, int a) {
+    if (!_snd) return 0;
+    switch (op) {
+    case 0x49: _snd->se(a); return 1;                       // PlaySE
+    case 0x4A: _snd->se_stop(a); return 1;                  // StopSE
+    case 0x4C: _snd->cry(a & 0x7FF, a >> 11); return 1;     // PlayCry
+    case 0x4E: _snd->fanfare(a); return 1;                  // PlayFanfare
+    case 0x50: _bgm_override = a; _snd->music(a); _bgm_cur = a; return 1;
+    case 0x51: _snd->music_fade(0); _bgm_override = -1; _bgm_cur = -2; return 1;
+    case 0x52: _bgm_override = -1; _bgm_cur = -2;
+        _music_update(); return 1;                          // PlayDefaultBGM
+    case 0x54: _snd->music_fade(a > 0 ? a : 30); return 1;  // FadeOutBGM
+    case 0x57: _bgm_override = a; return 1;                 // SetBGM (mémorisé)
+    case 0xEA: _snd->se(a); return 1;                       // regard dresseur
+    }
+    return 0;
+}
+
+int World::audio_busy(int kind) {
+    if (!_snd) return 0;
+    switch (kind) {
+    case 1: return _snd->se_any_busy() ? 1 : 0;             // un SE quelconque
+    case 2: return _snd->cry_busy() ? 1 : 0;
+    case 3: _snd->fanfare_check(); return _snd->fanfare_busy() ? 1 : 0;
+    }
+    return 0;
 }
 
 // scripts d'init : ON_LOAD(4) puis ON_TRANSITION(2) puis ON_RESUME(3)

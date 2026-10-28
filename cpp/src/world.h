@@ -86,6 +86,13 @@ public:
     size_t dlg_page_start() const { return _dlg_page; }
     bool yesno() const { return _yesno; }
     float banner_t() const { return _banner_t; }
+    int bgm_seq(bool night) const { return night ? _mus_night : _mus_day; }
+    int cam_type() const { return _cam_type; }
+    // audio SDAT (injecté par main) : BGM de zone + ops de script
+    void set_audio(class DsAudio* s) { _snd = s; }
+    bool is_night() const;                       // heure DS : 20h-4h
+    int  audio_op(int op, int a);                // exécute un op son du script
+    int  audio_busy(int kind);                   // 1=SE 2=cri 3=fanfare
     void choose_yesno(bool yes);            // réponse au menu Oui/Non
     // menu multi + fondu + course
     bool menu_open() const { return _vm.state() == ScriptVM::MENU; }
@@ -293,6 +300,13 @@ private:
     int _header = -1;
     std::string _label, _mapname;
     float _banner_t = 0.f;
+    int _mus_day = -1, _mus_night = -1;     // seq SDAT de zone (arm9 MapHeader)
+    int _cam_type = -1;                     // type caméra (0..16, 4 = ortho int.)
+    class DsAudio* _snd = nullptr;          // moteur son (main.cpp)
+    int _bgm_override = -1;                 // SetBGM du script (-1 = défaut map)
+    int _bgm_cur = -2;                      // dernière seq demandée au moteur
+    bool _bgm_victory = false;              // jingle de victoire en cours
+    float _mus_chk = 0;                     // sondage jour/nuit (sec)
     Nds::Matrix _mtx;
     std::vector<Nds::Zev::Warp> _warps;
     std::vector<Nds::Zev::Obj> _objects;
@@ -488,6 +502,7 @@ private:
     void _inst_props(Cell* c);                  // instancie les props d'une cellule
     void _finish_load(int header_id, int dest_warp); // spawn + logs + init
     void _set_header(int header_id, bool init); // events+scripts+PNJ d'un header
+    void _music_update();                     // applique BGM voulue au moteur
     void _run_init();                           // scripts d'init (4,2,3)
     void _stream();                             // cellules + header autour du joueur
     void _unload_all();

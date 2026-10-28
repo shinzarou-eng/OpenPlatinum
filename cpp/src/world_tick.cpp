@@ -2,6 +2,7 @@
 #include "world.h"
 #include "world_internal.h"
 #include "spr.h"
+#include "sdat.h"
 #include <cstdio>
 #include <cmath>
 #include <ctime>
@@ -101,6 +102,14 @@ void World::update(float dt, float ix, float iz) {
         _vm.continue_after(ScriptVM::WAITANIM); _vm.step();
         if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
     }
+    if (_vm.state() == ScriptVM::WAITSND &&
+        (!_vm.cb_sndbusy || !_vm.cb_sndbusy(_vm.wait_snd))) {
+        _vm.continue_after(ScriptVM::WAITSND); _vm.step();
+        if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
+    }
+    // bascule BGM jour/nuit (~1 s de sondage)
+    _mus_chk += dt;
+    if (_mus_chk > 1.f) { _mus_chk = 0; _music_update(); }
     if (_wt.st >= 0) {                          // transition de map en cours :
         _tick_warp(dt);                         // joueur/scripts/pas gelés
         return;
@@ -567,6 +576,11 @@ void World::_btl_start(bool trainer, int tid, int sp, int lv) {
     _btl.active = true;
     _btl.st = trainer ? Battle::INTRO : Battle::TRANS;
     _btl.anim = 1.2f;
+    // musique de combat : sauvage BA_POKE, dresseur BA_TRAIN (SEQ SDAT)
+    if (_snd) {
+        int bseq = _snd->seq_named(trainer ? "SEQ_BA_TRAIN" : "SEQ_BA_POKE");
+        if (bseq >= 0) { _snd->music(bseq); _bgm_cur = bseq; }
+    }
     if (trainer)
         _btl.msg = tr("Le Dresseur veut se battre !\nIl envoie ",
                       "The Trainer wants to battle!\nThey send out ") +
@@ -606,6 +620,11 @@ void World::battle_throw(int item) {
 
 void World::_btl_end() {
     bool lost = _btl.st == Battle::LOSE;
+    // musique de victoire DS : WINPOKE/WINTRAIN, puis le thème de zone reprend
+    if (_snd && !lost) {
+        int w = _snd->seq_named(_btl.trainer ? "SEQ_WINTRAIN" : "SEQ_WINPOKE");
+        if (w >= 0) { _snd->music(w); _bgm_victory = true; }
+    }
     if (_btl.caught && _vm.party.size() < 6) {    // capturé -> équipe
         ScriptVM::PartyMon pm;
         pm.species = _btl.foe().species; pm.level = _btl.foe().level;

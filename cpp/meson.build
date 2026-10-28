@@ -32,6 +32,7 @@ src = files(
     'src/msg.cpp',
     'src/render.cpp',
     'src/script.cpp',
+    'src/sdat.cpp',
     'src/spr.cpp',
     'src/world.cpp',
     'src/world_collision.cpp',

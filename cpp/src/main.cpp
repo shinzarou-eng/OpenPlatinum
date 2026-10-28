@@ -10,6 +10,7 @@
 #include "world.h"
 #include "render.h"
 #include "spr.h"
+#include "sdat.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -935,11 +936,12 @@ int main(int argc, char** argv) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    // audio : scaffold (pas encore de SDAT)
+    // audio : stream stéréo F32 44,1 kHz, alimenté par le moteur SDAT
     SDL_AudioSpec spec{SDL_AUDIO_F32, 2, 44100};
     SDL_AudioStream* audio = SDL_OpenAudioDeviceStream(
         SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
     if (audio) SDL_ResumeAudioStreamDevice(audio);
+    DsAudio snd;
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -1001,10 +1003,14 @@ int main(int argc, char** argv) {
         // langue UI : par défaut celle de la ROM (CPUF->FR, sinon EN)
         if (!cfg_ok && db.game_code().size() >= 4)
             g_opts.lang = db.game_code()[3] == 'F' ? 0 : 1;
+        // moteur son DS : archive SDAT (BGM/effets/cris)
+        if (snd.load(db.open_path(Nds::P_SDAT))) printf("[sdat] ok\n");
+        else fprintf(stderr, "[sdat] parse KO\n");
     }
 
     World world;
     world.init(&db);
+    world.set_audio(&snd);
     bool dbg_win = false;                       // F1 / --dbg
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--flat")) world.flat = true;
@@ -1849,6 +1855,17 @@ int main(int argc, char** argv) {
                 (int)!ImGui::GetIO().WantCaptureKeyboard);
         if (ist == I_OFF && !ImGui::GetIO().WantCaptureKeyboard)
             world.update(dt * world.dbg_speed, ix, iz);
+        // audio : maintient ~100 ms dans le stream (mixage SDAT)
+        if (audio && snd.ok()) {
+            int avail = SDL_GetAudioStreamAvailable(audio);
+            int want = 4410 - avail / 8;              // octets -> frames stéréo
+            if (want > 0) {
+                static float abuf[4410 * 2];
+                want = std::min(want, 4410);
+                snd.mix(abuf, want);
+                SDL_PutAudioStreamData(audio, abuf, want * 8);
+            }
+        }
         // pas-à-pas : une frame simulée même si le monde est figé (menu debug)
         if (world.dbg_frame) {
             bool fz = world.ui_frozen; world.ui_frozen = false;

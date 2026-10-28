@@ -250,3 +250,45 @@ std::string Nds::mapname(int idx) const {
     if (idx < 0 || (size_t)idx * 16 + 16 > mb.size()) return "?";
     return ascii(mb, (size_t)idx * 16, 16);
 }
+
+// ── table MapHeader réelle (arm9, 24 B/enregistrement) ───────────────────────
+// Cherche une suite d'au moins 590 records valides dans l'arm9. Critères :
+// area<75, mtx<289, scr/init<1124, msg<724, wild<183|0xFFFF, evt<534, cam<17.
+static bool hdr24_ok(const Bytes& a, size_t o) {
+    if (u8(a, o) >= 75) return false;
+    if (u16(a, o + 2) >= 289) return false;
+    if (u16(a, o + 4) >= 1124 || u16(a, o + 6) >= 1124) return false;
+    if (u16(a, o + 8) >= 724) return false;
+    uint16_t w = u16(a, o + 14);
+    if (w >= 183 && w != 0xFFFF) return false;
+    if (u16(a, o + 16) >= 534) return false;
+    if (u8(a, o + 21) >= 17) return false;
+    return true;
+}
+
+static void hdr24_find(const Bytes& rom, size_t& off, int& n) {
+    if (n != 0) return;                                 // -1 échec, >0 localisée
+    n = -1;
+    uint32_t a9off = u32(rom, 0x20), a9sz = u32(rom, 0x2C);
+    size_t end = std::min(rom.size(), (size_t)a9off + a9sz);
+    for (size_t o = a9off; o + 24 * 590 <= end; o += 4) {
+        if (!hdr24_ok(rom, o)) continue;
+        int cnt = 0;
+        while (o + (size_t)cnt * 24 + 24 <= end && hdr24_ok(rom, o + cnt * 24))
+            cnt++;
+        if (cnt >= 590) { off = o; n = cnt; return; }
+        o += 4;                                         // faux positif, continue
+    }
+}
+
+int Nds::map_music(int hdr_id, bool night) const {
+    hdr24_find(_rom, _hdr24off, _hdr24n);
+    if (_hdr24n <= 0 || hdr_id < 0 || hdr_id >= _hdr24n) return -1;
+    return u16(_rom, _hdr24off + (size_t)hdr_id * 24 + (night ? 12 : 10));
+}
+
+int Nds::map_camera(int hdr_id) const {
+    hdr24_find(_rom, _hdr24off, _hdr24n);
+    if (_hdr24n <= 0 || hdr_id < 0 || hdr_id >= _hdr24n) return -1;
+    return u8(_rom, _hdr24off + (size_t)hdr_id * 24 + 21);
+}
