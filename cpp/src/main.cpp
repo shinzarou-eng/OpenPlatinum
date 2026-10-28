@@ -2296,7 +2296,7 @@ int main(int argc, char** argv) {
             g_uds = sh2 / 192.f;
             g_udx = (sw2 - 256.f * g_uds) * 0.5f;
             static GLuint sgntex[10] = {};
-            static int sgn_w = 128, sgn_h = 48, sgn_n = 0;
+            static int sgn_w = 136, sgn_h = 40, sgn_n = 0;
             static bool sgn_try = false;
             if (!sgn_try) {
                 sgn_try = true;
@@ -2308,11 +2308,10 @@ int main(int argc, char** argv) {
                         auto t = spr::parse_ncgr(aw->member(v * 2));
                         auto pals = spr::parse_nclr(aw->member(v * 2 + 1));
                         if (!t.ntiles || pals.empty()) continue;
-                        int tx = 16, ty = (t.ntiles + 15) / 16;
-                        if (auto im = spr::compose(t, 0, tx, ty,
+                        // DS : la plaque se compose en 17x5 tuiles (136x40)
+                        if (auto im = spr::compose(t, 0, 17, 5,
                                 pals[0], true)) {
                             sgntex[v] = ui_upload(*im);
-                            sgn_w = tx * 8; sgn_h = ty * 8;
                             sgn_n = v + 1;
                         }
                     }
@@ -2321,23 +2320,28 @@ int main(int argc, char** argv) {
             }
             int sv = 0;
             if (const MapHeader* MHSG = db.header(world.header()))
-                sv = MHSG->mtype;
+                sv = MHSG->win;        // mapLabelWindowID -> variante
             if (sv >= sgn_n) sv = 0;
             if (sv < 0 || !sgntex[sv]) sv = 0;
-            // glissière : 0.3 s descente, maintien, 0.3 s remontée
+            // DS : plaque en haut à gauche ; descente 4px/tick, pause ~1 s,
+            // remontée (banner_t décroît de 1.5 à 0)
             float bt = world.banner_t();
             float yy = 0.f;
-            if (bt > 2.7f) yy = -(float)sgn_h + sgn_h * (3.f - bt) / 0.3f;
-            else if (bt < 0.3f) yy = -(float)sgn_h * (1.f - bt / 0.3f);
+            if (bt > 1.33f) yy = -(float)sgn_h +
+                sgn_h * (1.5f - bt) / 0.17f;
+            else if (bt < 0.17f)
+                yy = -(float)sgn_h * (1.f - bt / 0.17f);
             ImDrawList* dl = ImGui::GetForegroundDrawList();
-            float sx = (256.f - sgn_w) * 0.5f;
             if (sgntex[sv])
                 dl->AddImage((ImTextureID)(intptr_t)sgntex[sv],
-                    dp(sx, yy), dp(sx + sgn_w, yy + sgn_h));
-            // nom centré dans la plaque, texte sombre DS
-            float tw_ = dt_text_w(world.label().c_str());
-            dt_text(dl, world.label().c_str(),
-                128.f - tw_ * 0.5f, yy + sgn_h * 0.5f - 6.f, 3);
+                    dp(0, yy), dp(sgn_w, yy + sgn_h));
+            // nom dans la plaque : formule DS (marge paire centrée +4, y=16)
+            int strW = (int)dt_text_w(world.label().c_str());
+            int mg = ((strW + 8) / 8 * 8) - strW, lm = mg / 2;
+            int spare = (8 <= 4 + lm) ? 0 : (((8 - (4 + lm)) * 2) + 7) / 8;
+            int wt = ((strW + 8) / 8) + spare;
+            int xo = ((wt * 8) + 8 - strW) / 2;
+            dt_text(dl, world.label().c_str(), 4 + xo, yy + 16, 3);
         }
         // upload Image -> texture GL filtrée NEAREST (sûr en drawlist ImGui)
         auto& spr_upload = ui_upload;

@@ -440,7 +440,7 @@ void World::_set_header(int header_id, bool init) {
         header_id, H->label, _label.c_str());
     _mapname = _db->header_name(header_id);
     // DS map_name_popup : windowID==0 ou IsBuilding (INDOORS/POKECENTER) -> pas de popup
-    _banner_t = (H->win == 0 || H->mtype == 4 || H->mtype == 5) ? 0.f : 3.f;
+    _banner_t = (H->win == 0 || H->mtype == 4 || H->mtype == 5) ? 0.f : 1.5f;
     if (init) _run_init();
 }
 
