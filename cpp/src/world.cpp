@@ -761,6 +761,7 @@ void World::_set_header(int header_id, bool init) {
     };
     _vm.cb_runstate = [this]() -> int { return _can_run ? 1 : 0; };
     _vm.cb_mapid = [this]() -> int { return _header; };
+    _vm.cb_specmap = [this]() -> int { return _special.hdr; };
     _vm.cb_prevmap = [this]() -> int { return _prev_map; };
     _vm.cb_exitloc = [this](int m, int x, int z) {          // SetExitLocation
         _exit_map = m; _exit_x = x; _exit_z = z;
@@ -3068,29 +3069,32 @@ void World::ensure_skins() {
 
 // dos du joueur en combat : skins/back/<nom>.png quand la skin perso en a un
 // (Gold/Lyra HGSS), sinon le dos du héros/héroïne par genre (trbgra Platine)
+uint32_t World::skin_back_tex(int i) {
+    ensure_skins();
+    if (i < 0 || i >= (int)_skins.size()) return 0;
+    static std::map<std::string, uint32_t> cache;
+    const std::string& nm = _skins[i].name;
+    auto it = cache.find(nm);
+    if (it == cache.end()) {
+        uint32_t& t = cache[nm];
+        int w, h;
+        std::string p = _skindir + "/back/" + nm + ".png";
+        if (unsigned char* d = stbi_load(p.c_str(), &w, &h, nullptr, 4)) {
+            Image im;
+            im.create(w, h);
+            memcpy(im.px.data(), d, (size_t)w * h * 4);
+            t = rnd::upload_tex_nearest(im);
+            stbi_image_free(d);
+        }
+        it = cache.find(nm);
+    }
+    return it->second;
+}
+
 uint32_t World::player_back_tex() {
     if (skin >= SKIN_BASE) {
-        ensure_skins();
-        int i = skin - SKIN_BASE;
-        if (i >= 0 && i < (int)_skins.size()) {
-            static std::map<std::string, uint32_t> cache;
-            const std::string& nm = _skins[i].name;
-            auto it = cache.find(nm);
-            if (it == cache.end()) {
-                uint32_t& t = cache[nm];
-                int w, h;
-                std::string p = _skindir + "/back/" + nm + ".png";
-                if (unsigned char* d = stbi_load(p.c_str(), &w, &h, nullptr, 4)) {
-                    Image im;
-                    im.create(w, h);
-                    memcpy(im.px.data(), d, (size_t)w * h * 4);
-                    t = rnd::upload_tex_nearest(im);
-                    stbi_image_free(d);
-                }
-                it = cache.find(nm);
-            }
-            if (it->second) return it->second;
-        }
+        uint32_t t = skin_back_tex(skin - SKIN_BASE);
+        if (t) return t;
     }
     return trainer_back_tex(_gender ? 1 : 0);
 }

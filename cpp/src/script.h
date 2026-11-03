@@ -206,6 +206,7 @@ public:
     bool     sys_poketch = false, sys_bike = false;
     std::function<int()> cb_runstate;              // chaussures de sport acquises
     std::function<int()> cb_mapid;                 // map courante (GetCurrentMapID)
+    std::function<int()> cb_specmap;               // lieu spécial (GetFloorsAbove DS)
 
     // variables + flags (persistants entre maps)
     int  var(int v) const;

@@ -476,7 +476,9 @@ ScriptVM::St ScriptVM::step() {
                 {11,3},{12,2},{13,1},{14,0},
                 {103,1},{104,0},{112,1},{113,0},
                 {164,0},{150,1},{461,1},{462,0}};
-            int m = cb_mapid ? cb_mapid() : -1, n = 1;
+            // DS : GetFloorsAbove lit la SpecialLocation (étage d'où l'on
+            // vient), pas la map courante.
+            int m = cb_specmap ? cb_specmap() : -1, n = 1;
             for (auto& e : F) if (e.map == m) { n = e.n; break; }
             set_var((int)_arg[0], n); break; }
         case 0x012E: set_var((int)_arg[1], 0); break;     // DressUpPhotoHasData

@@ -97,6 +97,7 @@ public:
     void set_pos(float x, float z);          // téléport + stream + sol
     void set_y(float y) { _ppos.y = y; }     // debug : force la hauteur
     void set_dir(int d) { _pdir = d; }       // dir monde : 0=S 1=N 2=O 3=E
+    void set_special(int h) { _special.hdr = h; }  // debug : SpecialLocation
     int cell_count() const { return (int)_cells.size(); }
     int warp_count() const { return (int)_warps.size(); }
     int obj_count() const { return (int)_objects.size(); }
@@ -249,6 +250,7 @@ public:
     uint32_t trainer_back_tex(int idx);                  // dos dresseur (trbgra)
     uint32_t trainer_front_tex(int idx);                 // face dresseur (trfgra)
     uint32_t player_back_tex();                          // dos du joueur : sprite skin ou héros par genre
+    uint32_t skin_back_tex(int i);                       // dos d'une skin perso i (0 si absent)
     std::vector<int> _bag_seq;                           // ordre d'obtention
     int _reg_item = 0;
     bool ui_frozen = false;                              // menu X : monde en pause (DS)
