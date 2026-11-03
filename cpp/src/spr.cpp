@@ -132,7 +132,10 @@ std::vector<Cell> parse_ncer(const Bytes& d0) {
                 }
                 return true;
             };
-            int recsz = valid(16) ? 16 : (valid(8) ? 8 : 16);
+            int btype = b[2] | (b[3] << 8);     // 1 = records étendus (bounds)
+            int recsz = btype == 1 ? 16
+                : (btype == 0 ? 8
+                   : (valid(16) ? 16 : (valid(8) ? 8 : 16)));
             const uint8_t* cb = b + 0x18;
             const uint8_t* oamb = cb + ncells * recsz;
             static const int SZ[4][3] = {{8,8,8},{16,16,16},{32,32,32},{64,64,64}};
@@ -331,11 +334,16 @@ std::shared_ptr<Image> render_screen(const Bytes& scr0, const Ncgr& g,
     std::vector<RGBAf> flat;                        // 8bpp : palette 256 à plat
     if (g.bpp == 8)
         for (auto& p : pals) flat.insert(flat.end(), p.begin(), p.end());
+    // données en blocs d'écran 32x32 seulement si l'écran dépasse 256 px ;
+    // sinon les cellules sont rangées ligne par ligne (fenêtres <256 px)
+    bool blocks = w > 256 || h > 256;
     for (int c = 0; c < ncell; c++) {
-        // écrans > 256px : données groupées en blocs d'écran de 32x32 cellules
         int cx = c % cw, cy = c / cw;
-        int blk = (cy / 32) * (cw / 32) + (cx / 32);
-        int si = blk * 1024 + (cy & 31) * 32 + (cx & 31);
+        int si;
+        if (blocks) {
+            int blk = (cy / 32) * (cw / 32) + (cx / 32);
+            si = blk * 1024 + (cy & 31) * 32 + (cx & 31);
+        } else si = cy * cw + cx;
         if (si >= ncell) continue;
         uint16_t e = u16(sc, 0x24 + si * 2);
         int t = e & 0x3FF, pal = (e >> 12) & 0xF;

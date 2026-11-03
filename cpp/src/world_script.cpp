@@ -65,7 +65,16 @@ static const ScrRange SCR_RANGES[] = {          // trié décroissant
 };
 
 void World::_start_script(int id) {
-    if (!_scrnarc) return;
+    _dlg_dismiss = false;                           // nouveau script : boîte gérée
+    _spk_obj = -1;                                  // nouveau locuteur à déterminer
+    if (id == 10100) { _tv_open = true; return; }   // télé -> écran Motisma
+    if (_header == 415 && id == 5)                  // scène TV de la chambre
+        { _tv_open = true; _tv_scene = true; return; } // (intro, avant René)
+    if (_header == 415 && id == 6)                  // "regarder la télé" (BG)
+        { _tv_open = true; return; }
+    bool tv_supp = _header == 415 && id == 3 && _tv_scene;
+    if (tv_supp) _tv_suppress = true;               // fin d'émission : boîtes
+    if (!_scrnarc) return;                          // avalées, flags exécutés
     // ScriptContext_LoadAndOffsetID : locaux 1-indexés, 0 -> scripts_unk_0402
     int member = _header >= 0 ? _db->header(_header)->scr : -1, fn = id - 1;
     _cur_bank = _header >= 0 ? _db->header(_header)->msg : -1;
@@ -79,10 +88,59 @@ void World::_start_script(int id) {
     _vm_member = member;
     _vm.cur_script = id;                             // SCRIPT_MANAGER_SCRIPT_ID
     _vm.load(&_scrnarc->member(member));
-    // objet caché (8000+) : remplit VAR_0x8000/01/02 = item/qté/flag (gHiddenItems)
+    if (getenv("SCRDBG")) {                          // dump brut de la fonction
+        const Bytes& s = _scrnarc->member(member);
+        size_t p = 0; std::vector<size_t> fo;
+        while (p + 4 <= s.size()) {
+            if ((s[p] | (s[p + 1] << 8)) == 0xFD13) break;
+            fo.push_back(p + 4 + (s[p] | (s[p+1]<<8) | (s[p+2]<<16) | ((unsigned)s[p+3]<<24)));
+            p += 4;
+        }
+        printf("[scrdbg] id=%d member=%d fns=%zu\n", id, member, fo.size());
+        if (fn >= 0 && fn < (int)fo.size()) {
+            size_t o = fo[fn], e = (fn + 1 < (int)fo.size() && fo[fn+1] > o)
+                ? fo[fn + 1] : s.size();
+            printf("[scrdbg] fn%d @%zu..%zu :", fn, o, e);
+            for (size_t i = o; i < e && i < o + 220 && i < s.size(); i++)
+                printf(" %02x", s[i]);
+            printf("\n");
+        }
+    }
+    // objet caché (8000+) : remplit VAR_0x8000/01/02 = item/qté/flag
+    // table gHiddenItems DS (indexée par scriptID-8000 = flag-730)
     if (id >= 8000 && id < 8900) {
+        static const int16_t HI[][2] = {
+            {41,1}, {308,1}, {311,1}, {3,1}, {38,1}, {86,1}, {74,1}, {51,1}, {72,1}, {3,1},
+            {108,1}, {90,1}, {50,1}, {90,1}, {91,1}, {86,1}, {87,1}, {88,1}, {2,1}, {39,1},
+            {87,1}, {50,1}, {2,1}, {77,1}, {25,1}, {27,1}, {109,1}, {52,1}, {88,1}, {89,1},
+            {45,1}, {80,1}, {3,1}, {90,1}, {87,1}, {28,1}, {82,1}, {84,1}, {83,1}, {27,1},
+            {51,1}, {49,1}, {87,1}, {48,1}, {301,1}, {107,1}, {46,1}, {91,1}, {89,1}, {87,1},
+            {25,1}, {91,1}, {91,1}, {91,1}, {91,1}, {91,1}, {313,1}, {45,1}, {94,1}, {94,1},
+            {49,1}, {74,1}, {34,1}, {92,1}, {90,1}, {72,1}, {91,1}, {75,1}, {73,1}, {50,1},
+            {91,1}, {51,1}, {47,1}, {29,1}, {51,1}, {63,1}, {24,1}, {50,1}, {40,1}, {92,1},
+            {326,1}, {72,1}, {91,1}, {77,1}, {91,1}, {90,1}, {23,1}, {88,1}, {81,1}, {73,1},
+            {24,1}, {4,1}, {91,1}, {80,1}, {27,1}, {29,1}, {90,1}, {74,1}, {36,1}, {309,1},
+            {41,1}, {50,1}, {23,1}, {90,1}, {36,1}, {75,1}, {50,1}, {24,1}, {75,1}, {23,1},
+            {300,1}, {48,1}, {93,1}, {92,1}, {2,1}, {29,1}, {23,1}, {50,1}, {93,1}, {41,1},
+            {306,1}, {2,1}, {45,1}, {93,1}, {50,1}, {88,1}, {93,1}, {89,1}, {2,1}, {50,1},
+            {50,1}, {51,1}, {86,1}, {53,1}, {87,1}, {93,1}, {91,1}, {77,1}, {91,1}, {298,1},
+            {90,1}, {47,1}, {49,1}, {91,1}, {23,1}, {83,1}, {92,1}, {2,1}, {84,1}, {2,1},
+            {26,1}, {3,1}, {25,1}, {76,1}, {50,1}, {87,1}, {2,1}, {86,1}, {2,1}, {50,1},
+            {86,1}, {90,1}, {75,1}, {46,1}, {88,1}, {88,1}, {29,1}, {94,3}, {327,1}, {52,1},
+            {88,1}, {52,1}, {2,1}, {87,1}, {29,1}, {29,1}, {91,1}, {2,1}, {50,1}, {23,1},
+            {87,1}, {28,1}, {2,1}, {47,1}, {93,1}, {89,1}, {93,1}, {94,3}, {3,1}, {25,1},
+            {2,1}, {48,1}, {29,1}, {2,1}, {37,1}, {77,1}, {2,1}, {46,1}, {24,1}, {27,1},
+            {92,1}, {111,1}, {2,1}, {85,1}, {2,1}, {50,1}, {77,1}, {53,1}, {26,1}, {73,1},
+            {50,1}, {304,1}, {85,1}, {25,1}, {87,1}, {77,1}, {451,1}, {90,1}, {89,1}, {94,1},
+            {94,1}, {94,1}, {94,1}, {25,1}, {28,1}, {27,1}, {51,1}, {29,1}, {81,1}, {28,1},
+            {93,1}, {88,1}, {91,1}, {37,1}, {2,1}, {37,1}, {87,1}, {88,1}, {93,1}, {93,1},
+            {93,1}, {82,1}, {35,1}, {35,1}, {34,1}, {28,1}, {221,1}, {92,1}, {92,1}, {92,1},
+            {92,1}, {92,1}, {92,1}, {92,1}, {92,1}, {92,1}, {92,1},
+        };
         int fidx = id - 8000, item = 0, qty = 1;
-        if (fidx == 201) { item = 111; qty = 1; }    // Twinleaf : Clé de Voûte
+        if (fidx >= 0 && fidx < (int)(sizeof(HI) / sizeof(HI[0]))) {
+            item = HI[fidx][0]; qty = HI[fidx][1];
+        }
         _vm.set_var(0x8000, item);
         _vm.set_var(0x8001, qty);
         _vm.set_var(0x8002, 730 + fidx);             // HIDDEN_ITEM_FLAGS_START
@@ -118,6 +176,9 @@ int World::_frame_script() {
             if (!var) return -1;
             int a = var < 0x4000 ? var : _vm.var(var);
             int b = cvar < 0x4000 ? cvar : _vm.var(cvar);
+            static bool fdbg = getenv("FRDBG") != nullptr;
+            if (fdbg) printf("[frtbl] var=%04x(%d) cvar=%04x(%d) scr=%d\n",
+                var, a, cvar, b, scr);
             if (a == b) return scr;
             t += 6;
         }
@@ -141,6 +202,9 @@ void World::obj_respawn(int i) {
     static const int M[4] = {1, 0, 2, 3};          // dir ROM -> monde
     _objd[i] = M[o.dir & 3];
     _objmv[i] = o.move;
+    // DS unk_020EDBAC[mv=48] = sub_02069BE0 : sub_02062D80(obj,0) à l'init —
+    // téléporteur (Psy etc.) non-collidant tant que son cycle n'a pas warped in.
+    if (o.move == 48) _objnocoll.insert(i); else _objnocoll.erase(i);
     _objw[i].home = _objpos[i];
     _objw[i].dx = _objw[i].dz = _objw[i].step = 0;
     _objw[i].phase = 0.f;
@@ -179,7 +243,8 @@ World::DbgState World::dbg_save() const {
 }
 void World::dbg_load(const DbgState& s) {
     if (s.hdr >= 0 && s.hdr != _header) load_map(s.hdr, -1);
-    _ppos = s.pos; _pdir = s.dir; _ptx = _ppos.x; _ptz = _ppos.z;
+    _ppos = s.pos; _pdir = s.dir;
+    _ptx = _ppos.x; _ptz = _ppos.z; _pty = _ppos.y; _pface = -1;
     _pstep = 0; _vel = {0, 0, 0};
     _vm.import_vars(s.vars); _vm.import_flags(s.flags);
     _vm.party = s.party; _vm.money = s.money; _vm.badges = s.badges;
@@ -207,6 +272,8 @@ void World::set_pos(float x, float z) {
     _stream();
     float gy = _ground_y(_ppos, 300.f);
     _ppos.y = (gy > -1e7f) ? gy : 40.f;
+    _pftrail.clear(); _pfstep = 0;              // suiveur : se replace aussi
+    if (_pokefol >= 0) _pokefol_spawn();
 }
 
 // début de la 3e ligne visible : même wrap glouton par mots que le rendu
@@ -232,14 +299,57 @@ size_t World::_dlg_wrap_end(size_t mend) const {
     return std::string::npos;
 }
 
-// fin de la page de dialogue courante : prochain marqueur page DS (\n\n,
-// décodé depuis 0x25BC/BD), début de 3e ligne (scroll), ou fin du message
+// fin de la page de dialogue courante : POP — une page = tout le reste du
+// message (les coupures DS à 2 lignes / \n\n ne sont plus appliquées ; la
+// bulle grandit pour tout afficher d'un coup)
 size_t World::dlg_page_end() const {
-    if (_dlg_page >= _dialog.size()) return _dialog.size();
-    size_t p = _dialog.find("\n\n", _dlg_page);
-    size_t mend = p == std::string::npos ? _dialog.size() : p;
-    size_t w = _dlg_wrap_end(mend);
-    return w != std::string::npos && w < mend ? w : mend;
+    return _dialog.size();
+}
+
+// nb de caractères visibles dans la page (UTF-8 : compte les octets de tête)
+int World::dlg_page_chars() const {
+    size_t pe = dlg_page_end();
+    int n = 0;
+    for (size_t i = _dlg_page; i < pe; i++)
+        if ((_dialog[i] & 0xC0) != 0x80) n++;
+    return n;
+}
+
+// DS : la boîte message appartient au système, pas au script — elle reste
+// ouverte après la fin du script jusqu'à une fermeture explicite ou un
+// appui A (le prochain A la ferme sans déclencher d'interaction).
+// file field-return : prochain type init (4 OnLoad puis 3 OnResume) ; le
+// script trouvé remplace le VM — son _script_end_box rappellera ce bloc.
+bool World::_fldret_next() {
+    while (!_fldret_q.empty()) {
+        int t = _fldret_q.front(); _fldret_q.erase(_fldret_q.begin());
+        int id = _init_script(t);
+        if (id >= 0) { _start_script(id); _vm.step(); return true; }
+    }
+    return false;
+}
+
+void World::_script_end_box() {
+    _appr_type = -1;                                    // rencontre dresseur finie
+    _appr[0] = ApprSlot(); _appr[1] = ApprSlot();
+    _appr_task[0] = ApprTask(); _appr_task[1] = ApprTask();
+    if (_mbox && !_dialog.empty()) _dlg_dismiss = true;
+    else { _dialog.clear(); _mbox = false; }
+    if (_fldret) {
+        while (_fldret_next())
+            if (_vm.busy()) return;                     // init en cours -> sa
+                                                        // fin relance ce bloc
+        _fldret = false;
+        // FieldMap_Init DS : les objets/props à condition de progression sont
+        // réévalués au retour du combat (portail salle Giratina etc.)
+        _dw_objs_init(); _dw_spawn_simps();
+        if (_fldret_susp) {                             // reprise script combat
+            _fldret_susp = false;
+            _vm.restore_ctx(std::move(_fldret_ctx));
+            _vm.continue_after(ScriptVM::BATTLE); _vm.step();
+            if (!_vm.busy()) _script_end_box();
+        }
+    }
 }
 
 // texte dévoilé : _dlg_chars compte des caractères DANS la page courante
@@ -248,7 +358,7 @@ std::string World::dialog_shown() const {
     if (!_mbox || _dlg_page >= _dialog.size()) return "";
     size_t pe = dlg_page_end();
     size_t plen = pe - _dlg_page;
-    if (_dlg_chars >= (float)plen)
+    if (_dlg_chars >= (float)dlg_page_chars())
         return _dialog.substr(_dlg_page, plen);
     int n = (int)_dlg_chars;
     size_t i = _dlg_page;
@@ -260,15 +370,28 @@ std::string World::dialog_shown() const {
     return _dialog.substr(_dlg_page, i - _dlg_page);
 }
 
+// test : force une boîte message (DLGTEST) — réutilise le callback cb_msg
+// (formatage + palette) ; pas de script derrière : A referme la boîte
+void World::dlg_debug(int bank, int id) {
+    _cur_bank = bank;
+    if (_vm.cb_msg) _vm.cb_msg(id, true);
+    _dlg_dismiss = true;
+}
+
 // touche A / interaction
 void World::action() {
     if (_yesno || _header < 0 || _wt.st >= 0) return;  // transition : pas d'input
+    if (_dlg_dismiss && !_vm.busy()) {              // boîte laissée ouverte : A ferme
+        _dlg_dismiss = false; _mbox = false;
+        _dialog.clear(); _dlg_chars = 0.f; _dlg_page = 0;
+        return;
+    }
     if (_vm.busy()) {
         auto s = _vm.state();
         // DS : appui pendant l'impression -> page entière d'abord
         if (s == ScriptVM::MSG || s == ScriptVM::WAITBTN) {
-            size_t plen = dlg_page_end() - _dlg_page;
-            if (_dlg_chars < (float)plen) { _dlg_chars = (float)plen; return; }
+            float plen = (float)dlg_page_chars();
+            if (_dlg_chars < plen) { _dlg_chars = plen; return; }
             // page terminée + il en reste : on avance de page, pas le script
             size_t pe = dlg_page_end();
             if (pe < _dialog.size()) {
@@ -291,12 +414,13 @@ void World::action() {
             }
             _vm.step();
         }
-        if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
+        if (!_vm.busy()) _script_end_box();
         if (_warp_req) { _warp_req = false; load_map(_pw.hdr, -1);
             _ppos = {_pw.x * TILE + TILE / 2.f, 60.f, _pw.z * TILE + TILE / 2.f};
             static const int M[4] = {1, 0, 2, 3};     // dir ROM -> monde
             _pdir = M[_pw.dir & 3];
-            _warp_cd_x = _pw.x; _warp_cd_z = _pw.z; }
+            _warp_cd_x = _pw.x; _warp_cd_z = _pw.z;
+            if (_pokefol >= 0) _pokefol_spawn(); }
         return;
     }
     // DS sub_0203C9D4 : objet sur la tuile regardée ; si cette tuile est un
@@ -318,7 +442,15 @@ void World::action() {
     if (verbose)
         printf("[act] f=%d p=(%d,%d) d=%d t=(%d,%d) objs=%zu\n",
             _dbg_frames, ptx, ptz, _pdir, tx, tz, _objects.size());
-    if (!best) {                                   // panneaux / événements BG
+    if (!best) {
+        _talk_obj = -1;                      // pas un PNJ : pas de locuteur
+        // Pokémon suiveur : A face à lui -> réaction (avant les événements BG)
+        if (pokefol_shown()) {
+            int ftx2 = (int)floorf(_pfpos.x / TILE);
+            int ftz2 = (int)floorf(_pfpos.z / TILE);
+            if (ftx2 == tx && ftz2 == tz) { _pokefol_talk(); return; }
+        }
+        // panneaux / événements BG
         // DS : FieldEvent_GetInteractedBgEventScript — uniquement la tuile
         // regardée (tx,tz). playerFacingDir : 0=N,1=E,2=W,3=S,4=ALL,5=W/E,6=N/S.
         static const int W2R[4] = {3, 0, 2, 1};    // S,N,W,E -> enum ROM
@@ -337,12 +469,30 @@ void World::action() {
             if (verbose) printf("[bg] fire (%d,%d) scr=%d t=(%d,%d)\n",
                 (int)b.x, (int)b.z, b.script, tx, tz);
             _start_script(b.script); _vm.step();
-            if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
+            if (!_vm.busy()) _script_end_box();
             return;
+        }
+        // Villa : FieldSystem_TrySetVillaFurnitureScript DS — meuble solide
+        // possédé sur la tuile regardée -> script 0x15+type (TV : 10100,
+        // face nord uniquement).
+        if (_gym.kind == 8) {
+            for (const VillaFurn& f : VILLA_FURN) {
+                if (!f.s || !_vm.flag(2461 + f.t)) continue;
+                if (tx < f.l || tx > f.r || tz < f.tp || tz > f.b) continue;
+                int sid = f.t == 5 ? (_pdir == 1 ? 10100 : -1)
+                                 : 0x15 + f.t;
+                if (sid < 0) continue;
+                if (sid == 10100) { _tv_open = true; return; } // écran Motisma
+                _start_script(sid); _vm.step();
+                if (!_vm.busy()) _script_end_box();
+                return;
+            }
         }
         // DS Field_TileBehaviorToScript : comportement de la tuile regardée
         // (PC/étagères/poubelle/rayons/télé/cascade/carte/parking vélo).
         int beh = _tile_beh(ftx, ftz), sid = 0xFFFF;
+        if (verbose || getenv("BEHDBG"))
+            printf("[beh] faced=(%d,%d) beh=%02x\n", ftx, ftz, beh);
         // DS FieldMoves : face à une tuile surfable + badge Fen (bit 3) + un
         // Pokémon capable de Surf -> script 10004 (« Voulez-vous surfer ? »)
         if (!_psurf && _surfable(beh) && (_vm.badges & 8) && _party_can_surf())
@@ -358,14 +508,14 @@ void World::action() {
         case 0xEB: sid = 2506; break;                        // rayon magasin 2
         case 0xEC: sid = 2507; break;                        // rayon magasin 3
         case 0x85: sid = 2508; break;                        // carte de la ville
-        case 0x86: if (_pdir == 1) sid = 10100; break;       // TV (face nord)
+        case 0x86: if (_pdir == 1) { _tv_open = true; return; } break; // Télé-Motisma
         case 0xDB: sid = 2030; break;                        // parking à vélos
         case 0x13: sid = 10006; break;                       // cascade
         }
         if (sid != 0xFFFF) {
             if (verbose) printf("[beh] beh=%02x scr=%d\n", beh, sid);
             _start_script(sid); _vm.step();
-            if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
+            if (!_vm.busy()) _script_end_box();
         }
         return;
     }
@@ -375,14 +525,16 @@ void World::action() {
     _objd[bi] = abs(fz) >= abs(fx) ? (fz > 0 ? 0 : 1) : (fx < 0 ? 2 : 3);
     _pdir = _objd[bi] ^ 1;
     _talk_obj = bi;
+    _vm.set_var(0x800D, best->id);              // VAR_LAST_TALKED (RemoveObject)
     if (verbose) printf("[obj] talk id=%d scr=%d\n", best->id, best->script);
     _start_script(best->script); _vm.step();
-    if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
+    if (!_vm.busy()) _script_end_box();
     if (_warp_req) { _warp_req = false; load_map(_pw.hdr, -1);
         _ppos = {_pw.x * TILE + TILE / 2.f, 60.f, _pw.z * TILE + TILE / 2.f};
         static const int M[4] = {1, 0, 2, 3};         // dir ROM -> monde
         _pdir = M[_pw.dir & 3];
-        _warp_cd_x = _pw.x; _warp_cd_z = _pw.z; }
+        _warp_cd_x = _pw.x; _warp_cd_z = _pw.z;
+        if (_pokefol >= 0) _pokefol_spawn(); }
 }
 
 void World::choose_yesno(bool yes) {
@@ -390,7 +542,7 @@ void World::choose_yesno(bool yes) {
         _vm.set_var(_vm.pending_var, yes ? 0 : 1);          // 0=oui 1=non
         _yesno = false;
         _vm.continue_after(ScriptVM::YESNO); _vm.step();
-        if (!_vm.busy()) { _dialog.clear(); _mbox = false; }
+        if (!_vm.busy()) _script_end_box();
     }
 }
 
@@ -491,6 +643,11 @@ static int item_u8(const Bytes& d, int off) {
     return (int)d.size() > off ? d[off] : 0;
 }
 int World::item_field_use(int id) {              // utilisable sur le terrain
+    if (id == 76 || id == 77 || id == 79) {      // Repousse DS : 200/250/100 pas
+        _repel = id == 77 ? 250 : id == 76 ? 200 : 100;
+        _repel_item = id;
+        return 4;
+    }
     if (item_pocket(id) != 1) return 0;          // médicaments uniquement
     auto n = _db->narc("/itemtool/itemdata/pl_item_data.narc");
     if (!n || id < 0 || id >= n->count()) return 0;
@@ -506,8 +663,8 @@ bool World::item_tossable(int id) {
 bool World::item_registrable(int id) {
     return item_pocket(id) == 7;                 // objets rares -> touche Y (DS)
 }
-int World::mon_maxhp(int species, int lv, int iv, int ev) {  // PV max : pl_personal byte0
-    if (iv < 0) iv = 16;
+int World::mon_maxhp(int species, int lv, uint32_t ivs, int ev) {  // PV max : pl_personal byte0
+    int iv = ivs == 0xFFFFFFFFu ? 16 : iv_at(ivs, 0);      // non tirés : IV moyen
     auto n = _db->narc("/poketool/personal/pl_personal.narc");
     if (n && species > 0 && species < n->count()) {
         const Bytes& d = n->member(species);
@@ -548,7 +705,7 @@ bool World::_mon_learns_hm(const ScriptVM::PartyMon& m, int hm) const {
 bool World::_party_can_surf() const {
     for (auto& m : _vm.party) {
         if (m.hp <= 0) continue;
-        auto bm = battle_make(_db, m.species, m.level, nullptr, m.iv);
+        auto bm = battle_make(_db, m.species, m.level, nullptr, m.ivs);
         for (int k = 0; k < bm.nmoves; k++) if (bm.moves[k] == 57) return true;
         if (_mon_learns_hm(m, 3)) return true;        // sait/peut apprendre CS03
     }

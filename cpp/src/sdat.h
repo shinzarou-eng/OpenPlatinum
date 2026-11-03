@@ -30,6 +30,15 @@ public:
     void pause_bgm(bool p);
     void stop_all();
     void set_gain(float g) { _gain = g; }
+    void bgm_vol(int v);                            // volume musique 0-127 (option)
+    // SetInitialVolumeForSequence : écrase le volume initial de la séquence
+    void seq_vol(int seq, int vol) {
+        if (seq >= 0 && seq < (int)_seqs.size())
+            _seqs[seq].vol = (uint8_t)(vol < 0 ? 0 : vol > 127 ? 127 : vol);
+    }
+    int seq_player(int seq) const {              // player INFO de la séquence
+        return seq >= 0 && seq < (int)_seqs.size() ? _seqs[seq].player : -1;
+    }
     float gain() const { return _gain; }
 
 private:
@@ -136,6 +145,7 @@ private:
     int _cry_player_idx = 0;
     int _fanfare_tail = 0;                     // sondes restantes après le ME
     std::unordered_map<int,int> _playervol;    // volume par player INFO
+    int _musvol = 127;                           // option MUSIQUE -> _playervol[BGM]
 
     int  _bgm_player() const { return _bgm_player_idx; }
     int  _cry_player() const { return _cry_player_idx; }

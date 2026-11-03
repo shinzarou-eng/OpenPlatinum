@@ -64,3 +64,6 @@ options.cfg
 imgui.ini
 _ref_web/
 mockup/
+
+# Devin CLI local config (contains API keys)
+.devin/mcp_config.local.json

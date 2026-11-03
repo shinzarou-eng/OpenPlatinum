@@ -20,7 +20,8 @@ static const std::unordered_map<int, const char*>& charmap() {
     for (int i = 0; i < 32; i++) { cm[0x15F + i] = up[i]; cm[0x17F + i] = lo[i]; }
     static const std::pair<int, const char*> misc[] = {
         {0x0001," "},{0x00A2,"0"},{0x0105,"♪"},{0x011B,"←"},{0x011C,"↑"},
-        {0x011D,"↓"},{0x011E,"→"},{0x0120,"&"},{0x1A8,"$"},{0x1A9,"¡"},
+        {0x011D,"↓"},{0x011E,"→"},{0x0120,"&"},{0x019F,"Œ"},{0x1A0,"œ"},
+        {0x1A8,"$"},{0x1A9,"¡"},
         {0x1AA,"¿"},{0x1AB,"!"},{0x1AC,"?"},{0x1AD,","},{0x1AE,"."},
         {0x1AF,"…"},{0x1B0,"·"},{0x1B1,"/"},{0x1B2,"'"},{0x1B3,"'"},
         {0x1B4,"“"},{0x1B5,"”"},{0x1B7,"«"},{0x1B8,"»"},{0x1B9,"("},
@@ -29,7 +30,7 @@ static const std::unordered_map<int, const char*>& charmap() {
         {0x1C4,":"},{0x1C5,";"},{0x1C6,"♠"},{0x1C7,"♣"},{0x1C8,"♥"},
         {0x1C9,"♦"},{0x1CA,"★"},{0x1CC,"●"},{0x1CD,"●"},{0x1CE,"■"},
         {0x1CF,"◆"},{0x1D0,"@"},{0x1D1,"♪"},{0x1D2,"%"},{0x1DE," "},
-        {0x1E8,"°"},{0x1E9,"_"},{0x1EA,"_"},
+        {0x1E2," "},{0x1E8,"°"},{0x1E9,"_"},{0x1EA,"_"},
     };
     for (auto& p : misc) cm[p.first] = p.second;
     return cm;

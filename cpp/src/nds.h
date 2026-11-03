@@ -74,6 +74,7 @@ public:
     static constexpr const char* P_ZEV    = "/fielddata/eventdata/zone_event.narc";
     static constexpr const char* P_TEXSET = "/fielddata/areadata/area_map_tex/map_tex_set.narc";
     static constexpr const char* P_BMODEL = "/fielddata/build_model/build_model.narc";
+    static constexpr const char* P_ABMTEX = "/fielddata/areadata/area_build_model/areabm_texset.narc";
     static constexpr const char* P_MAPNAME= "/fielddata/maptable/mapname.bin";
     static constexpr const char* P_MSG    = "/msgdata/pl_msg.narc";
     static constexpr const char* P_MMODEL = "/data/mmodel/mmodel.narc";
@@ -84,6 +85,7 @@ public:
     static constexpr const char* P_TRTBLOF="/poketool/trmsg/trtblofs.narc";
     static constexpr const char* P_ENC   = "/fielddata/encountdata/pl_enc_data.narc";
     static constexpr const char* P_POKEGRA="/poketool/pokegra/pl_pokegra.narc";
+    static constexpr const char* P_OTHERPOKE="/poketool/pokegra/pl_otherpoke.narc";
     static constexpr const char* P_ITEMICON="/itemtool/itemdata/item_icon.narc";
     static constexpr const char* P_BMANIME="/arc/bm_anime.narc";
     static constexpr const char* P_BMANILIST="/arc/bm_anime_list.narc";

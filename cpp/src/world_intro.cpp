@@ -2,7 +2,11 @@
 // écrans NSCR (logo, fonds, aides) et portraits RGCN (Sorbier, héros, rival).
 #include "world.h"
 #include "spr.h"
+#include "../thirdparty/stb/stb_image.h"
 #include <map>
+#include <vector>
+#include <cstdio>
+#include <string>
 
 namespace {
 
@@ -47,7 +51,7 @@ std::shared_ptr<Image> portrait_img(Narc& n, int ci, int pi, int frame) {
 uint32_t put(int id, const std::shared_ptr<Image>& im) {
     if (!im || im->px.empty()) return 0;
     g_texsz[id] = {im->w, im->h};
-    g_tex[id] = rnd::upload_tex(*im);
+    g_tex[id] = rnd::upload_tex_nearest(*im);   // pixel art : jamais flouté
     return g_tex[id];
 }
 
@@ -139,7 +143,7 @@ uint32_t World::namein_icon_tex(int kind, int frame) {
                 auto im = spr::render_cell(g, cells[ci], pals);
                 if (im) {
                     cw[kind] = im->w; ch[kind] = im->h;
-                    c[kind][frame] = rnd::upload_tex(*im);
+                    c[kind][frame] = rnd::upload_tex_nearest(*im);
                 }
             }
         }
@@ -359,6 +363,150 @@ void World::draw_title(float asp) {
     }
 }
 
+// ── vortex DoDWWarp (dw_warp.c DS) : tunnel titledemo membre 16 ────────────
+// BCA 18 (joints) + BTA 17 (UV) en boucle ; caméra 160 unités au-dessus de
+// l'origine, regard vertical (-90°), FOV 22° qui resserre jusqu'à ~3° pendant
+// les 85 frames d'anim — l'effet « chute dans le vortex ».
+void World::draw_dwarp(float asp) {
+    struct DwVortex {
+        bool ok = false;
+        PropInst pi;
+        std::shared_ptr<bmd::Model> mdl;
+        bmd::JntAnim jnt;
+        std::vector<bmd::TexAnim> bta;
+    };
+    static DwVortex g_vx;
+    if (!g_vx.ok) {
+        g_vx.ok = true;
+        std::string p = "/resource/" + res_dir(_db) + "/title/titledemo.narc";
+        auto n = _db->narc(p);
+        if (n && n->count() > 18) {
+            g_vx.mdl = std::make_shared<bmd::Model>(
+                bmd::parse_bmd(n->member(16)));
+            PropInst& pi = g_vx.pi;
+            pi.mdl = g_vx.mdl.get();
+            for (auto& mg : g_vx.mdl->meshes) {
+                std::vector<Vec3> ct; Vec3 o{0,0,0};
+                auto buf = _tris(mg, o, &ct);
+                bool alpha = false; int polyA = 31;
+                uint32_t t = _mat_tex(mg.matdef, g_vx.mdl->textures,
+                                      &alpha, &polyA);
+                GpuMesh g = rnd::upload(buf.data(),
+                    (int)buf.size() / rnd::VF, t);
+                g.dbg_name = mg.matdef.name;   // mat pour matcher les BTA
+                g.alpha_cut = alpha;
+                g.blend = polyA < 31 ? std::max(polyA / 31.f, 0.03f) : 1.f;
+                g.poly_id = (mg.matdef.poly >> 24) & 63;
+                g.fog = ((mg.matdef.poly >> 15) & 1) != 0;
+                g.lit = mg.matdef.poly & 0xF;
+                if (!t && (mg.matdef.dif & 0x8000))
+                    g.tint = rgb555f(mg.matdef.dif & 0x7FFF);
+                pi.meshes.push_back(g);
+                pi.mkey.push_back(bmd::group_key(mg.mat, mg.node));
+                pi.minv.push_back(mg.xf.inverse());
+                if (verbose) {
+                    Vec3 mn{1e9f,1e9f,1e9f}, mx{-1e9f,-1e9f,-1e9f};
+                    for (auto& pr : mg.prims) for (auto& v : pr.v) {
+                        mn.x=fminf(mn.x,v.p.x); mn.y=fminf(mn.y,v.p.y);
+                        mn.z=fminf(mn.z,v.p.z); mx.x=fmaxf(mx.x,v.p.x);
+                        mx.y=fmaxf(mx.y,v.p.y); mx.z=fmaxf(mx.z,v.p.z);
+                    }
+                    printf("[dwarp] mat=%s tex=%s verts=%zu bbox %.0f..%.0f %.0f..%.0f %.0f..%.0f\n",
+                        mg.matdef.name.c_str(), mg.matdef.tex_name.c_str(),
+                        buf.size() / rnd::VF, mn.x,mx.x, mn.y,mx.y, mn.z,mx.z);
+                }
+            }
+            g_vx.jnt = bmd::parse_bca(n->member(18));
+            pi.anm = &g_vx.jnt;
+            g_vx.bta = bmd::parse_bta0(n->member(17));
+            pi.tanms = &g_vx.bta;
+            if (verbose)
+                for (auto& t : g_vx.bta)
+                    printf("[dwarp] bta mat=%s nfr=%d\n",
+                           t.mat.c_str(), t.nframe);
+        }
+    }
+    if (g_vx.pi.meshes.empty()) return;
+    PropInst& pi = g_vx.pi;
+    float prog = dwarp_prog();                     // 0 -> 1 sur 2,1 s
+    // anims DS : Easy3DAnim_UpdateLooped(FX32_ONE) par frame (~30 fps
+    // d'anim, même cadence que draw_title)
+    pi.anm_frame += 0.5f;
+    pi.tanm_frame += 0.5f;
+    if (pi.anm && pi.anm->nframe > 0) {
+        int f = (int)pi.anm_frame % std::max(1, pi.anm->nframe);
+        auto bones = pi.mdl->bones;
+        for (int ni : pi.anm->nodes)
+            if (ni >= 0 && ni < (int)bones.size())
+                bones[ni] = bmd::bca_node(*pi.anm, ni, f, pi.mdl->bones[ni]);
+        pi.anm_cur = bmd::replay_xf(*pi.mdl, bones);
+    }
+    // BTA : transform UV par matériau (spirale qui défile)
+    if (pi.tanms) {
+        int nfr = 0;
+        for (auto& t : *pi.tanms) nfr = std::max(nfr, t.nframe);
+        if (nfr > 0) {
+            while (pi.tanm_frame >= nfr) pi.tanm_frame -= nfr;
+            int f = (int)pi.tanm_frame;
+            for (auto& g : pi.meshes) {
+                const bmd::TexAnim* ta = nullptr;
+                for (auto& t : *pi.tanms)
+                    if (t.mat == g.dbg_name) { ta = &t; break; }
+                if (!ta) continue;
+                auto ev = [](const bmd::TexAnim::Chan& c, int f) {
+                    if (c.key && !c.keys.empty())
+                        return c.keys[f % (int)c.keys.size()];
+                    return c.cst;
+                };
+                float rt = ev(ta->rot, f);
+                g.uvtr[0] = ev(ta->tu, f); g.uvtr[1] = ev(ta->tv, f);
+                g.uvtr[2] = ev(ta->su, f); g.uvtr[3] = ev(ta->sv, f);
+                if (g.uvtr[2] == 0.f) g.uvtr[2] = 1.f;
+                if (g.uvtr[3] == 0.f) g.uvtr[3] = 1.f;
+                g.uvrot[0] = cosf(rt); g.uvrot[1] = sinf(rt);
+                g.uvani = true;
+            }
+        }
+    }
+    // caméra DS exacte (DWWarp_InitCamera/CameraMove) : cible (0,0,0),
+    // distance 160, pitch ~-90°. fovY part de 22° puis chaque frame :
+    // fovY -= (persp>>8) unités binaires, persp 60<<8 -> 16<<8 (planché).
+    // persp>>8 décroît 60->16 : après f frames, perte = 60f-0.25f(f-1)
+    // puis +16/frame une fois persp planché (f>88) — ~85f d'anim + fades.
+    float f = prog * 118.f;                        // ~2,0 s DS à 60 fps
+    float loss = f <= 88.f ? 60.f * f - 0.25f * f * (f - 1.f)
+                           : 3366.f + 16.f * (f - 88.f);
+    float fovy_deg = 22.f - loss * (360.f / 65536.f);
+    if (fovy_deg < 0.5f) fovy_deg = 0.5f;
+    Mat4 view = Mat4::look_at({0, 160.f, 0.001f}, {0, 0, 0}, {0, 0, -1});
+    Mat4 proj = Mat4::perspective(fovy_deg * 0.01745329252f, asp,
+                                  1.f, 4096.f);
+    Mat4 mvp = proj.mul(view);
+    // éclairage doux (toon shading DS approx.) + fond noir
+    static DsLight VL;
+    static bool vl_set = false;
+    if (!vl_set) {
+        vl_set = true;
+        VL.n = 1;
+        VL.dir[0][0] = 0.f; VL.dir[0][1] = -1.f; VL.dir[0][2] = 0.f;
+        VL.col[0][0] = VL.col[0][1] = VL.col[0][2] = 1.f;
+        VL.dif[0] = VL.dif[1] = VL.dif[2] = 1.f;
+        VL.amb[0] = VL.amb[1] = VL.amb[2] = 0.55f;
+    }
+    rnd::set_light(&VL);
+    rnd::set_clear(0.f, 0.f, 0.f);
+    Mat4 id = Mat4::ident();
+    bool anim = !pi.anm_cur.empty();
+    for (int pass = 0; pass < 2; pass++)
+        for (size_t i = 0; i < pi.meshes.size(); i++) {
+            bool a = pi.meshes[i].blend < 0.999f;
+            if (a == (pass == 0)) continue;
+            rnd::draw(pi.meshes[i],
+                anim ? mvp.mul(_prop_node_delta(pi, (int)i)) : mvp);
+        }
+    (void)id;
+}
+
 // ── icônes d'objets ──────────────────────────────────────────────────────────
 // item -> membres de item_icon.narc : table générée (ordre res/items/item_icon.order)
 #include "item_icons.inc"
@@ -379,7 +527,7 @@ uint32_t World::item_icon_tex(int id, int frame) {
                 int nf = (int)(g.tiles.size() / (16 * 32));   // 1 ou 2 frames
                 int t0 = (nf > 1 ? (frame & 1) : 0) * 16;
                 auto im = spr::compose(g, t0, 4, 4, pals[0]);
-                if (im) t = rnd::upload_tex(*im);
+                if (im) t = rnd::upload_tex_nearest(*im);
             }
         }
     }
@@ -395,6 +543,24 @@ uint32_t World::mon_icon_tex(int species, int frame) {
     auto it = c.find(key);
     if (it != c.end()) return it->second;
     uint32_t t = 0;
+    {   // pack HD : images/monstericons/NNN-i.png (36x36, 3 frames/espèce)
+        char rel[64];
+        snprintf(rel, sizeof rel, "monstericons/%03d-%d.png",
+            species, frame & 3);
+        const char* dirs[] = {"images/", "../images/", "../../images/"};
+        for (auto d : dirs) {
+            std::string p = std::string(d) + rel;
+            int x = 0, y = 0, comp = 0;
+            uint8_t* px = stbi_load(p.c_str(), &x, &y, &comp, 4);
+            if (!px) continue;
+            Image im; im.w = x; im.h = y;
+            im.px.assign(px, px + (size_t)x * y * 4);
+            stbi_image_free(px);
+            t = rnd::upload_tex_nearest(im);
+            break;
+        }
+    }
+    if (!t) {
     auto n = _db->narc("/poketool/icongra/pl_poke_icon.narc");
     if (n && n->count() > 7 + species) {
         auto pals = spr::parse_nclr(n->member(0));
@@ -405,8 +571,9 @@ uint32_t World::mon_icon_tex(int species, int frame) {
             int nf = (int)(g.tiles.size() / (16 * 32));
             int t0 = (nf > 1 ? (frame & 1) : 0) * 16;
             auto im = spr::compose(g, t0, 4, 4, pals[pi < (int)pals.size() ? pi : 0]);
-            if (im) t = rnd::upload_tex(*im);
+            if (im) t = rnd::upload_tex_nearest(*im);
         }
+    }
     }
     c[key] = t;
     return t;
@@ -461,7 +628,7 @@ uint32_t World::battle_bg_tex(int bg, int tod) {
                         im->px[k] = fill.r; im->px[k + 1] = fill.g;
                         im->px[k + 2] = fill.b; im->px[k + 3] = 255;
                     }
-                t = rnd::upload_tex(*im);
+                t = rnd::upload_tex_nearest(*im);
             }
         }
     }
@@ -523,7 +690,7 @@ uint32_t World::battle_plat_tex(int ter, int side) {
             auto im = spr::render_cell(g, cells[0], pals, 0, true);
             if (im) {
                 g_platsz[key] = {im->w, im->h};
-                t = rnd::upload_tex(*im);
+                t = rnd::upload_tex_nearest(*im);
             }
         }
     }
@@ -554,7 +721,7 @@ static uint32_t tr_tex(Nds* db, const char* path, int idx) {
         auto cells = spr::parse_ncer(n->member(idx * 5 + 2));
         if (!pals.empty() && !cells.empty()) {
             if (auto im = spr::render_cell(g, cells[0], pals, 0, true))
-                t = rnd::upload_tex(*im);
+                t = rnd::upload_tex_nearest(*im);
         }
     }
     c[idx] = t;

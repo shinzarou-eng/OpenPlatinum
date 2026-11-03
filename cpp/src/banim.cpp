@@ -1,0 +1,739 @@
+// banim.cpp — animations d'attaques DS : VM we.arc + particules SPL (.spa).
+// Assets : battle_fx/we.bin (scripts 501+50) et battle_fx/spa.bin (485 .spa).
+#include "banim.h"
+#include "battle.h"
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
+#include "imgui.h"
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <cmath>
+#include <vector>
+#include <unordered_map>
+#include <filesystem>
+namespace fs = std::filesystem;
+
+// ── utils ────────────────────────────────────────────────────────────────────
+#include "common.h"          // fx32/fx16
+static void rgb555(int v, uint8_t c[3]) {
+    c[0] = (v & 31) * 8; c[1] = ((v >> 5) & 31) * 8; c[2] = ((v >> 10) & 31) * 8;
+}
+static uint32_t rnd() { static uint32_t s = 0x9E3779B9; s = s * 1664525 + 1013904223; return s >> 8; }
+static float frnd(float a, float b) { return a + (b - a) * (rnd() & 0xFFFF) / 65535.f; }
+static std::string exe_dir() {
+    const char* bp = SDL_GetBasePath();
+    return bp ? bp : "";
+}
+static std::vector<uint8_t> load_file(const char* rel) {
+    for (std::string p : {std::string(rel), exe_dir() + rel,
+                          std::string("../") + rel, exe_dir() + "../" + rel}) {
+        if (FILE* f = fopen(p.c_str(), "rb")) {
+            fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+            std::vector<uint8_t> d(n); fread(d.data(), 1, n, f); fclose(f);
+            return d;
+        }
+    }
+    return {};
+}
+
+// ── assets ───────────────────────────────────────────────────────────────────
+struct WeBlob { std::vector<uint8_t> d; int narc = 0; const uint32_t* offs = nullptr;
+    const uint8_t* member(int i, int* n) const {
+        if (i < 0 || i >= narc) return nullptr;
+        uint32_t a = offs[i], e = (i + 1 < narc) ? offs[i + 1] : (uint32_t)d.size();
+        *n = (int)(e - a); return d.data() + a;
+    }
+};
+static WeBlob g_we;                       // scripts (0..500 = moves, 500+ = subs)
+static std::vector<std::vector<uint8_t>> g_spa;   // 485 .spa bruts
+static bool g_assets_tried = false;
+static bool banim_load() {
+    if (g_assets_tried) return !g_we.d.empty();
+    g_assets_tried = true;
+    auto wb = load_file("battle_fx/we.bin");
+    auto sb = load_file("battle_fx/spa.bin");
+    if (wb.size() >= 8 && sb.size() >= 4) {
+        uint32_t na, ns; memcpy(&na, wb.data(), 4); memcpy(&ns, wb.data() + 4, 4);
+        g_we.narc = na + ns;
+        g_we.offs = (const uint32_t*)(wb.data() + 8);
+        g_we.d = std::move(wb);
+        const uint32_t* so = (const uint32_t*)(sb.data() + 4);
+        uint32_t nsp; memcpy(&nsp, sb.data(), 4);
+        for (uint32_t i = 0; i < nsp; i++) {
+            uint32_t a = so[i], e = (i + 1 < nsp) ? so[i + 1] : (uint32_t)sb.size();
+            if (a < e && e <= sb.size())
+                g_spa.emplace_back(sb.begin() + a, sb.begin() + e);
+            else g_spa.emplace_back();
+        }
+    }
+    return !g_we.d.empty();
+}
+static const uint8_t* we_script(int mv, int* n) {
+    // move id -> index membre (table waza_seq inutilisée : we.arc est indexé
+    // par l'ID d'anim qui coïncide avec l'ordre des moves sur DS)
+    return g_we.member(mv, n);
+}
+
+// ── .spa parsé ───────────────────────────────────────────────────────────────
+struct SpaTex { int w = 0, h = 0; GLuint gl = 0; };
+struct SpaRes {
+    uint32_t flags = 0;
+    int emitType = 0, drawType = 0;
+    float basePos[3] = {0, 0, 0}, emitCount = 0, radius = 0, length = 0;
+    float axis[3] = {0, 0, 4096}, velPos = 0, velAxis = 0, baseScale = 1;
+    float aspect = 1; int startDelay = 0;
+    uint8_t color[3] = {255, 255, 255};
+    int emitLife = 0, ptclLife = 30;
+    uint8_t rScale = 0, rLife = 0, rVel = 0;
+    uint8_t interval = 0, alpha0 = 31, airRes = 0, texIdx = 0;
+    int loop = 0;
+    // anims
+    bool hasScale = false; float scS = 1, scM = 1, scE = 1; int scPeak = 50;
+    bool hasColor = false; uint8_t cS[3] = {0}, cE[3] = {0}; int cPeak = 50, cEnd = 100;
+    bool hasAlpha = false; int aS = 31, aM = 31, aE = 31, aPk1 = 25, aPk2 = 75;
+    bool hasTexA = false; uint8_t texFr[8] = {0}; int texN = 0, texStep = 4;
+    bool hasChild = false; uint16_t chLife = 0; float chEndScale = 1;
+    uint8_t chCount = 0, chVelR = 0, chScaleR = 0, chTex = 0; uint8_t chCol[3] = {0};
+    uint32_t behav = 0;
+    float grav[3] = {0}, randv[3] = {0}; int randIv = 0;
+    float mag[4] = {0}, conv[4] = {0};
+    int spinAng = 0;
+};
+struct Spa {
+    std::vector<SpaRes> res;
+    std::vector<SpaTex> tex;
+    bool parsed = false;
+};
+static std::unordered_map<int, Spa> g_spas;
+
+static void spa_parse(Spa& s, const std::vector<uint8_t>& d) {
+    s.parsed = true;
+    if (d.size() < 32) return;
+    uint16_t rc, tc; memcpy(&rc, d.data() + 8, 2); memcpy(&tc, d.data() + 10, 2);
+    size_t off = 32;
+    auto rd = [&](void* p, size_t n) { if (off + n <= d.size()) memcpy(p, d.data() + off, n); off += n; };
+    for (int i = 0; i < rc && off + 88 <= d.size(); i++) {
+        SpaRes r; uint32_t u32; int32_t i32; int16_t i16; uint16_t u16;
+        rd(&r.flags, 4);
+        r.emitType = r.flags & 15; r.drawType = (r.flags >> 4) & 3;
+        for (int k = 0; k < 3; k++) { rd(&i32, 4); r.basePos[k] = fx32(i32); }
+        rd(&i32, 4); r.emitCount = fx32(i32);
+        rd(&i32, 4); r.radius = fx32(i32);
+        rd(&i32, 4); r.length = fx32(i32);
+        for (int k = 0; k < 3; k++) { rd(&i16, 2); r.axis[k] = i16 / 4096.f; }
+        rd(&u16, 2); rgb555(u16, r.color);
+        rd(&i32, 4); r.velPos = fx32(i32);
+        rd(&i32, 4); r.velAxis = fx32(i32);
+        rd(&i32, 4); r.baseScale = fx32(i32);
+        rd(&i16, 2); r.aspect = i16 / 4096.f; rd(&i16, 2); r.startDelay = i16;
+        rd(&i16, 2); /*rotMin*/ rd(&i16, 2); /*rotMax*/
+        rd(&i16, 2); /*initAngle*/ rd(&i16, 2); /*reserved*/
+        rd(&u16, 2); r.emitLife = u16; rd(&u16, 2); r.ptclLife = u16;
+        rd(&u32, 4); r.rScale = u32 & 255; r.rLife = (u32 >> 8) & 255; r.rVel = (u32 >> 16) & 255;
+        rd(&u32, 4); r.interval = u32 & 255; r.alpha0 = (u32 >> 8) & 255;
+        r.airRes = (u32 >> 16) & 255; r.texIdx = (u32 >> 24) & 255;
+        rd(&u32, 4); r.loop = u32 & 255;
+        rd(&u32, 4); rd(&u32, 4); rd(&u32, 4);   // poly + userData + pad
+        off += 0;                                 // 88 consommés
+        // (repart proprement : les champs ci-dessus totalisent 88)
+        if (r.flags & 0x100) {                    // scale anim 12B
+            int16_t a, m, e; uint16_t c, f; uint16_t pk;
+            rd(&a, 2); rd(&m, 2); rd(&e, 2); rd(&c, 2); rd(&f, 2); rd(&pk, 2);
+            r.hasScale = true; r.scS = fx16(a); r.scM = fx16(m); r.scE = fx16(e);
+            r.scPeak = c & 255;
+        }
+        if (r.flags & 0x200) {                    // color anim 12B
+            uint16_t cs, ce, cv, f, pk;
+            rd(&cs, 2); rd(&ce, 2); rd(&cv, 2); rd(&f, 2); rd(&pk, 2);
+            r.hasColor = true; rgb555(cs, r.cS); rgb555(ce, r.cE);
+            r.cPeak = cv & 255; r.cEnd = (cv >> 8) & 255;
+        }
+        if (r.flags & 0x400) {                    // alpha anim 8B
+            uint16_t a, f, cv, pk;
+            rd(&a, 2); rd(&f, 2); rd(&cv, 2); rd(&pk, 2);
+            r.hasAlpha = true; r.aS = a & 31; r.aM = (a >> 5) & 31; r.aE = (a >> 10) & 31;
+            r.aPk1 = cv & 255; r.aPk2 = (cv >> 8) & 255;
+        }
+        if (r.flags & 0x800) {                    // tex anim 12B
+            uint8_t fr[8]; uint32_t pm;
+            rd(fr, 8); rd(&pm, 4);
+            r.hasTexA = true; r.texN = pm & 255; r.texStep = (pm >> 8) & 255;
+            for (int k = 0; k < 8 && k < r.texN; k++) r.texFr[k] = fr[k];
+        }
+        if (r.flags & 0x10000) {                  // child 20B
+            uint16_t cf, rv, es, lt; uint8_t vr, sr; uint16_t col; uint32_t msc;
+            rd(&cf, 2); rd(&rv, 2); rd(&es, 2); rd(&lt, 2); rd(&vr, 1); rd(&sr, 1);
+            rd(&col, 2); rd(&msc, 4); off += 4;
+            r.hasChild = true; r.chLife = lt; r.chEndScale = fx16(es);
+            r.chVelR = vr; r.chScaleR = sr; rgb555(col, r.chCol);
+            r.chCount = msc & 255; r.chTex = (msc >> 24) & 255;
+        }
+        static const struct { uint32_t fl; int sz; } BH[] = {
+            {0x1000000, 8}, {0x2000000, 8}, {0x4000000, 16},
+            {0x8000000, 4}, {0x10000000, 8}, {0x20000000, 16}};
+        for (auto& b : BH) if (r.flags & b.fl) {
+            if (b.fl == 0x1000000) { int16_t x, y, z; uint16_t p;
+                rd(&x, 2); rd(&y, 2); rd(&z, 2); rd(&p, 2);
+                r.behav |= 1; r.grav[0] = fx16(x); r.grav[1] = fx16(y); r.grav[2] = fx16(z);
+            } else if (b.fl == 0x2000000) { int16_t x, y, z; uint16_t iv;
+                rd(&x, 2); rd(&y, 2); rd(&z, 2); rd(&iv, 2);
+                r.behav |= 2; r.randv[0] = fx16(x); r.randv[1] = fx16(y);
+                r.randv[2] = fx16(z); r.randIv = iv;
+            } else if (b.fl == 0x4000000) { int32_t x, y, z; int16_t f2; uint16_t p;
+                rd(&x, 4); rd(&y, 4); rd(&z, 4); rd(&f2, 2); rd(&p, 2);
+                r.behav |= 4; r.mag[0] = fx32(x); r.mag[1] = fx32(y);
+                r.mag[2] = fx32(z); r.mag[3] = fx16(f2);
+            } else if (b.fl == 0x8000000) { uint16_t a, ax;
+                rd(&a, 2); rd(&ax, 2); r.behav |= 8; r.spinAng = a;
+            } else if (b.fl == 0x10000000) { int32_t y2; int16_t el; uint16_t ct;
+                rd(&y2, 4); rd(&el, 2); rd(&ct, 2); r.behav |= 16;
+            } else if (b.fl == 0x20000000) { int32_t x, y, z; int16_t f2; uint16_t p;
+                rd(&x, 4); rd(&y, 4); rd(&z, 4); rd(&f2, 2); rd(&p, 2);
+                r.behav |= 32; r.conv[0] = fx32(x); r.conv[1] = fx32(y);
+                r.conv[2] = fx32(z); r.conv[3] = fx16(f2);
+            }
+        }
+        s.res.push_back(r);
+    }
+    // textures : A5I3 (fmt6) / A3I5 (fmt1) -> RGBA + GL
+    for (int i = 0; i < tc && off + 32 <= d.size(); i++) {
+        uint32_t hdr[8]; memcpy(hdr, d.data() + off, 32);
+        uint32_t param = hdr[1], tsz = hdr[2], pof = hdr[3], psz = hdr[4], rsz = hdr[7];
+        int fmt = param & 15, w = 8 << ((param >> 4) & 15), h = 8 << ((param >> 8) & 15);
+        SpaTex t; t.w = w; t.h = h;
+        size_t to = off + 32;
+        if ((fmt == 6 || fmt == 1) && to + tsz <= d.size() && pof + psz <= rsz) {
+            std::vector<uint8_t> px(w * h * 4);
+            size_t palo = off + pof;
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                uint8_t v = d[to + (size_t)y * w + x];
+                int idx, al;
+                if (fmt == 6) { idx = v & 7; al = (v >> 3) & 31; }
+                else { idx = v & 31; al = (v >> 5) & 7; }
+                uint8_t c[3] = {0};
+                if (palo + 2 * idx + 1 < d.size()) {
+                    uint16_t pv; memcpy(&pv, d.data() + palo + 2 * idx, 2);
+                    rgb555(pv, c);
+                }
+                uint8_t* q = &px[((size_t)y * w + x) * 4];
+                q[0] = c[0]; q[1] = c[1]; q[2] = c[2];
+                q[3] = fmt == 6 ? al * 8 : al * 36;
+            }
+            glGenTextures(1, &t.gl);
+            glBindTexture(GL_TEXTURE_2D, t.gl);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                GL_UNSIGNED_BYTE, px.data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        s.tex.push_back(t);
+        off += rsz ? rsz : 32;
+    }
+}
+static Spa* spa_get(int id) {
+    if (id < 0 || id >= (int)g_spa.size()) return nullptr;
+    auto& s = g_spas[id];
+    if (!s.parsed) spa_parse(s, g_spa[id]);
+    return &s;
+}
+
+// ── runtime ──────────────────────────────────────────────────────────────────
+struct Particle {
+    float x = 0, y = 0, z = 0, vx = 0, vy = 0, vz = 0;
+    int age = 0, life = 0; float scl = 1;
+    int res = -1, spa = -1; int ti = 0;
+    bool child = false;
+};
+struct Emitter {
+    bool on = false; int spa = -1, res = -1;
+    float x = 0, y = 0;                     // ancre écran (px DS)
+    int t = 0, sinceEmit = 0, emitted = 0;
+    float xp[8] = {0};                      // SetExtraParams
+    int mvt = -1; float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0; int mdur = 1;
+    bool parab = false;
+};
+struct FuncTask {                            // effet battler/fondu asynchrone
+    int kind = 0, t = 0, dur = 1, tgt = -1;
+    float a[8] = {0};
+};
+struct Banim {
+    bool on = false; int move = -1, atk = 0, def = 1;
+    // VM
+    const uint8_t* pc = nullptr; const uint8_t* base = nullptr; const uint8_t* end = nullptr;
+    int32_t vars[8] = {0};
+    int delay = 0, waitTasks = false, waitEmit = false, ended = true;
+    const uint8_t* calls[8]; int ncall = 0;
+    struct { const uint8_t* pc; int n; } loops[8]; int nloop = 0;
+    Spa* psys[8] = {nullptr};               // LoadPS slots
+    Emitter emit[8];
+    std::vector<Particle> parts;
+    std::vector<FuncTask> tasks;
+    // état visuel battlers consulté par le rendu
+    float bdx[4] = {0}, bdy[4] = {0}, bsa[4] = {1, 1, 1, 1}, bsy[4] = {1, 1, 1, 1};
+    float balp[4] = {1, 1, 1, 1}; bool bhid[4] = {0}; int bblink[4] = {0};
+    uint8_t fadeC[3] = {0}; float fadeA = 0;   // FadeBg overlay
+    uint8_t flashC[3] = {255, 255, 255}; float flashA[4] = {0};
+};
+static Banim G;
+
+static int rdw(const uint8_t*& pc) {
+    uint32_t v; memcpy(&v, pc, 4); pc += 4;
+    return v & 0x80000000 ? (int32_t)v : (int32_t)v;
+}
+static float pos_param(const Emitter& e, int i) { return e.xp[i]; }
+
+// ── émission d'une particule depuis une ressource ────────────────────────────
+static void emit_one(Emitter& e, Spa& s, const SpaRes& r, bool child,
+                     float px, float py, float pz) {
+    if (G.parts.size() > 512) return;
+    Particle p; p.spa = e.spa; p.res = e.res; p.child = child;
+    float rv = r.rVel ? frnd(1.f - r.rVel / 255.f, 1.f) : 1.f;
+    // position initiale selon la forme d'émission
+    float ex = 0, ey = 0, ez = 0;
+    switch (r.emitType) {
+    case 1: {                               // sphere surface
+        float u = frnd(-1, 1), ph = frnd(0, 6.2832f);
+        float rr = sqrtf(1 - u * u) * r.radius;
+        ex = rr * cosf(ph); ey = u * r.radius; ez = rr * sinf(ph);
+    } break;
+    case 2: {                               // circle border (plan XY)
+        float ph = frnd(0, 6.2832f);
+        ex = r.radius * cosf(ph); ey = r.radius * sinf(ph);
+    } break;
+    case 3: {                               // circle uniform
+        float ph = frnd(0, 6.2832f), rr = r.radius * sqrtf(frnd(0, 1));
+        ex = rr * cosf(ph); ey = rr * sinf(ph);
+    } break;
+    case 4: {                               // sphere volume
+        float u = frnd(-1, 1), ph = frnd(0, 6.2832f);
+        float rr = powf(frnd(0, 1), 1 / 3.f) * r.radius;
+        ex = rr * sqrtf(1 - u * u) * cosf(ph); ey = rr * u; ez = rr * sqrtf(1 - u * u) * sinf(ph);
+    } break;
+    case 5: {                               // circle (disque XZ)
+        float ph = frnd(0, 6.2832f), rr = r.radius * sqrtf(frnd(0, 1));
+        ex = rr * cosf(ph); ez = rr * sinf(ph);
+    } break;
+    case 6: case 7: {                       // cylindre
+        float ph = frnd(0, 6.2832f), hh = frnd(0, r.length);
+        float rr = (r.emitType == 6) ? r.radius : r.radius * sqrtf(frnd(0, 1));
+        ex = rr * cosf(ph); ey = hh; ez = rr * sinf(ph);
+    } break;
+    default: break;                         // point
+    }
+    // vélocité : velPos le long du rayon + velAxis le long de l'axe
+    float vl = sqrtf(ex * ex + ey * ey + ez * ez);
+    float nx = vl > 0.01f ? ex / vl : 0.f, ny = vl > 0.01f ? ey / vl : 1.f, nz = vl > 0.01f ? ez / vl : 0.f;
+    p.vx = (nx * r.velPos + r.axis[0] * r.velAxis) * rv;
+    p.vy = (ny * r.velPos + r.axis[1] * r.velAxis) * rv;
+    p.vz = (nz * r.velPos + r.axis[2] * r.velAxis) * rv;
+    p.x = px + r.basePos[0] + ex; p.y = py + r.basePos[1] + ey; p.z = pz + r.basePos[2] + ez;
+    p.life = r.ptclLife;
+    if (r.rLife) p.life = (int)(p.life * frnd(1.f - r.rLife / 255.f, 1.f));
+    if (p.life < 1) p.life = 1;
+    p.scl = r.baseScale * (r.rScale ? frnd(1.f - r.rScale / 255.f, 1.f) : 1.f);
+    if (child) p.scl *= r.chScaleR ? r.chScaleR / 255.f * 0.01f + 0.99f : 1.f;
+    p.ti = r.texIdx;
+    G.parts.push_back(p);
+}
+
+// ── CallFunc : tâches d'effet battler ────────────────────────────────────────
+static void func_task(int fid, const int32_t* a, int n) {
+    FuncTask t; t.tgt = G.def;
+    switch (fid) {
+    case 33:                                // FadeBg: type,delay,a0,a1,color
+        if (n >= 5) { t.kind = 1; t.dur = a[1] > 0 ? a[1] : 1;
+            t.a[0] = a[2]; t.a[1] = a[3];
+            rgb555(a[4] & 0x7FFF, G.fadeC); }
+        break;
+    case 34:                                // FadeBattlerSprite: battler,frames,endDelay,color,alpha,hold
+        if (n >= 4) { t.kind = 2; t.dur = a[1] > 0 ? a[1] : 1;
+            t.tgt = a[0] ? G.def : G.atk;
+            uint8_t c[3]; rgb555(a[3] & 0x7FFF, c);
+            t.a[0] = c[0]; t.a[1] = c[1]; t.a[2] = c[2];
+            t.a[3] = n > 4 ? a[4] : 255; t.a[4] = n > 5 ? a[5] : 0; }
+        break;
+    case 36: {                              // Shake: ex,ey,interval,amount,targets
+        t.kind = 3; t.dur = n > 3 ? a[3] : 20;
+        t.a[0] = n > 0 ? a[0] : 2; t.a[1] = n > 1 ? a[1] : 0;
+        t.tgt = G.def;
+    } break;
+    case 40: if (n >= 2) G.bhid[a[0] ? G.def : G.atk] = a[1] != 0; return;
+    case 42:                                // ScaleBattlerSprite: tgt,sx0,sx1,sy0,sy1,ref,cycles,frames
+        if (n >= 8) { t.kind = 4; t.tgt = a[0] ? G.def : G.atk; t.dur = a[7] > 0 ? a[7] : 1;
+            for (int i = 0; i < 4; i++) t.a[i] = a[1 + i] / 100.f;
+            t.a[4] = a[6]; }
+        break;
+    case 50:                                // BlinkAttacker: count,interval
+        if (n >= 2) { G.bblink[G.atk] = a[0] * a[1] + 1; } return;
+    case 51:                                // MoveBattlerX: frames,offset,target
+        if (n >= 3) { t.kind = 5; t.tgt = a[2] ? G.def : G.atk;
+            t.dur = a[0] > 0 ? a[0] : 1; t.a[0] = a[1]; }
+        break;
+    case 57:                                // MoveBattler: target,dx,dy,frames
+        if (n >= 4) { t.kind = 6; t.tgt = a[0] ? G.def : G.atk;
+            t.dur = a[3] > 0 ? a[3] : 1; t.a[0] = a[1]; t.a[1] = a[2]; }
+        break;
+    case 61: if (n >= 1) { t.kind = 7; t.tgt = a[0] ? G.def : G.atk;
+            t.dur = n > 1 ? a[1] : 20; t.a[0] = 1; } break;   // MoveOffScreen
+    case 62: if (n >= 1) { t.kind = 7; t.tgt = a[0] ? G.def : G.atk;
+            t.dur = n > 1 ? a[1] : 10; t.a[0] = 0; } break;   // MoveToDefault
+    case 63:                                // FadePokemonSprite: targets,a0,a1,..,frames
+        if (n >= 6) { t.kind = 8; t.tgt = a[0] ? G.def : G.atk; t.dur = a[5] > 0 ? a[5] : 1;
+            t.a[0] = a[1] / 100.f; t.a[1] = a[2] / 100.f; }
+        break;
+    case 65: case 66: {                     // MoveEmitterLinear/Parab: emitter,x0,y0,x1,y1,frames
+        int ei = n > 0 ? a[0] : 0;
+        if (ei >= 0 && ei < 8 && G.emit[ei].on && n >= 6) {
+            Emitter& e = G.emit[ei];
+            e.mvt = 0; e.mdur = a[5] > 0 ? a[5] : 1;
+            e.mx0 = a[1]; e.my0 = a[2]; e.mx1 = a[3]; e.my1 = a[4];
+            e.parab = fid == 66;
+        }
+    } return;
+    case 80: case 81: case 82: case 83: {   // StatChange: flash battler + flèche
+        t.kind = 9; t.tgt = G.def; t.dur = 30; t.a[0] = fid == 81 ? -1 : 1;
+    } break;
+    default: return;                        // fonction non gérée : rien
+    }
+    if (t.dur <= 0) t.dur = 1;
+    G.tasks.push_back(t);
+}
+
+// ── VM ───────────────────────────────────────────────────────────────────────
+static void vm_create_emitter(int slot, int psIdx, int resId) {
+    if (slot < 0 || slot >= 8 || psIdx < 0 || psIdx >= 8 || !G.psys[psIdx]) return;
+    Spa& s = *G.psys[psIdx];
+    if (resId < 0 || resId >= (int)s.res.size()) return;
+    Emitter& e = G.emit[slot]; e = Emitter{};
+    e.on = true; e.spa = psIdx; e.res = resId;
+    // ancre : basePos du .spa est relatif au battler défenseur (espace écran)
+    e.x = 0; e.y = 0;                       // résolu au draw depuis l'ancre
+}
+static void vm_step() {
+    int guard = 0;
+    while (!G.ended && !G.delay && !G.waitTasks && !G.waitEmit && ++guard < 4096) {
+        if (G.pc + 4 > G.end) { G.ended = true; break; }
+        const uint8_t* instr = G.pc;
+        int op = rdw(G.pc);
+        auto rel = [&](int w) {              // cible = mot contenant l'offset
+            const uint8_t* wpos = G.pc + 4 * w;
+            int32_t r; memcpy(&r, wpos, 4);
+            return wpos + 4 * r;
+        };
+        switch (op) {
+        case 0: G.delay = rdw(G.pc); break;
+        case 1: G.waitTasks = true; break;
+        case 2: { int n = rdw(G.pc);
+            if (G.nloop < 8) { G.loops[G.nloop].pc = G.pc; G.loops[G.nloop].n = n; G.nloop++; }
+        } break;
+        case 3: if (G.nloop > 0) {
+                if (--G.loops[G.nloop - 1].n > 0) G.pc = G.loops[G.nloop - 1].pc;
+                else G.nloop--;
+            } break;
+        case 4: G.ended = true; break;
+        case 10: if (G.ncall < 8) { G.calls[G.ncall++] = G.pc + 4; G.pc = rel(0); }
+                 else G.pc += 4; break;
+        case 11: if (G.ncall > 0) G.pc = G.calls[--G.ncall]; else G.ended = true; break;
+        case 12: { int v = rdw(G.pc), x = rdw(G.pc); if (v >= 0 && v < 8) G.vars[v] = x; } break;
+        case 13: {                            // JmpChanceOdd : 2 rels (paire/impaire)
+            const uint8_t* w0 = G.pc; int32_t r0; memcpy(&r0, w0, 4);
+            const uint8_t* w1 = G.pc + 4; int32_t r1; memcpy(&r1, w1, 4);
+            G.pc = (rnd() & 1) ? w1 + 4 * r1 : w0 + 4 * r0;
+        } break;
+        case 14: {                            // JmpChance pct,rel
+            int p = rdw(G.pc);
+            const uint8_t* w = G.pc; int32_t r; memcpy(&r, w, 4); G.pc += 4;
+            if ((int)(rnd() % 100) < p) G.pc = w + 4 * r;
+        } break;
+        case 15: { const uint8_t* w = G.pc; int32_t r; memcpy(&r, w, 4);
+            G.pc = w + 4 * r; } break;
+        case 30: { int a = rdw(G.pc), b = rdw(G.pc);
+            const uint8_t* w = G.pc; int32_t r; memcpy(&r, w, 4); G.pc += 4;
+            int av = (a >= 0 && a < 8) ? G.vars[a] : a;
+            if (av == b) G.pc = w + 4 * r; } break;
+        case 33: rdw(G.pc); break;            // JmpUnk01 : ignore
+        case 45: {                            // CallFunc fid,argc,args
+            int fid = rdw(G.pc), n = rdw(G.pc); if (n > 16) n = 16;
+            int32_t a[16]; for (int i = 0; i < n; i++) a[i] = rdw(G.pc);
+            func_task(fid, a, n);
+        } break;
+        case 46: { int ps = rdw(G.pc), rs = rdw(G.pc); rdw(G.pc);
+            vm_create_emitter(0, ps, rs); } break;
+        case 47: { int ps = rdw(G.pc), ei = rdw(G.pc), rs = rdw(G.pc); rdw(G.pc);
+            vm_create_emitter(ei, ps, rs); } break;
+        case 48: { int ps = rdw(G.pc); for (int i = 0; i < 5; i++) rdw(G.pc);
+            rdw(G.pc); int rs = 0; vm_create_emitter(0, ps, rs); } break;
+        case 49: { int ps = rdw(G.pc); int rs = rdw(G.pc);
+            for (int i = 0; i < 4; i++) rdw(G.pc);
+            vm_create_emitter(0, ps, rs); } break;
+        case 50: G.waitEmit = true; break;
+        case 51: { int sl = rdw(G.pc), id = rdw(G.pc);
+            if (sl >= 0 && sl < 8) G.psys[sl] = spa_get(id); } break;
+        case 52: rdw(G.pc); rdw(G.pc); rdw(G.pc); break;
+        case 53: { int sl = rdw(G.pc); if (sl >= 0 && sl < 8) G.psys[sl] = nullptr; } break;
+        case 55: {                            // SetExtraParams n,args -> émetteur 0
+            int n = rdw(G.pc); if (n > 8) n = 8;
+            for (int i = 0; i < n; i++) {
+                int32_t v = rdw(G.pc);
+                if (G.emit[0].on) G.emit[0].xp[i] = v;
+            }
+        } break;
+        case 56: case 57: case 58: case 59: case 60: {
+            static const int NA[] = {0, 1, 4, 0, 1};
+            for (int i = 0; i < NA[op - 56]; i++) rdw(G.pc);
+        } break;
+        case 61: case 62: case 63: { rdw(G.pc); rdw(G.pc); } break;
+        case 64: {                            // JmpBattlerSide v,r1,r2
+            rdw(G.pc);
+            const uint8_t* w1 = G.pc; int32_t r1; memcpy(&r1, w1, 4);
+            const uint8_t* w2 = G.pc + 4; int32_t r2; memcpy(&r2, w2, 4);
+            G.pc += 8;
+            G.pc = (G.atk & 1) ? w2 + 4 * r2 : w1 + 4 * r1;
+        } break;
+        case 65: rdw(G.pc); rdw(G.pc); rdw(G.pc); break;
+        case 66: rdw(G.pc); break;
+        case 67: memset(G.vars, 0, sizeof G.vars); break;
+        case 68: case 69: rdw(G.pc); break;
+        case 70: for (int i = 0; i < 5; i++) rdw(G.pc); break;  // JmpWeather : none
+        case 71: rdw(G.pc); break;            // JmpContest : jamais
+        case 72: rdw(G.pc); break;            // JmpFF : jamais
+        case 73: for (int i = 0; i < 8; i++) rdw(G.pc); break;
+        case 74: case 76: case 77: rdw(G.pc); rdw(G.pc); break;
+        case 75: rdw(G.pc); rdw(G.pc); rdw(G.pc); break;
+        case 78: { for (int i = 0; i < 8; i++) rdw(G.pc);
+            int n = rdw(G.pc); for (int i = 0; i < n; i++) rdw(G.pc); } break;
+        case 79: for (int i = 0; i < 8; i++) rdw(G.pc); break;
+        case 80: rdw(G.pc); break;
+        case 81: rdw(G.pc); rdw(G.pc); break;
+        case 82: rdw(G.pc); rdw(G.pc); rdw(G.pc); break;
+        case 83: rdw(G.pc); break;
+        case 84: G.waitTasks = true; break;   // WaitLRX ~ wait tâches
+        case 5: case 8: case 9: case 22: case 23: case 24: case 25: case 26:
+        case 29: case 31: case 32: case 34: case 35: case 36: case 44: {
+            static const std::unordered_map<int,int> na = {
+                {5,1},{8,2},{9,0},{22,2},{23,1},{24,5},{25,4},{26,3},
+                {29,0},{31,2},{32,1},{34,3},{35,5},{36,5},{44,1}};
+            auto it = na.find(op); int c = it == na.end() ? 0 : it->second;
+            for (int i = 0; i < c; i++) rdw(G.pc);
+        } break;
+        default:                              // inconnu : resynchronise mot à mot
+            G.pc = instr + 4; break;
+        }
+        (void)instr;
+    }
+}
+
+// ── API ──────────────────────────────────────────────────────────────────────
+void banim_start(Battle& b, int move, int attacker, int defender) {
+    if (!banim_load()) return;
+    int n = 0; const uint8_t* s = we_script(move, &n);
+    if (!s || n < 8) return;
+    G = Banim{};
+    G.on = true; G.move = move; G.atk = attacker; G.def = defender;
+    G.pc = G.base = s; G.end = s + n; G.ended = false;
+    G.parts.reserve(256);
+    vm_step();
+}
+void banim_stop() { G.on = false; G.ended = true; G.parts.clear(); }
+bool banim_busy() { return G.on; }
+
+void banim_update(Battle& b, float dt) {
+    if (!G.on) return;
+    // timing DS : le script compte en frames 60Hz
+    static float acc = 0;
+    acc += dt;
+    int frames = (int)(acc * 60.f);
+    if (frames < 1) return;
+    acc -= frames / 60.f;
+    for (int f = 0; f < frames; f++) {
+        // tâches asynchrones (shake, move, fade…)
+        for (auto& t : G.tasks) {
+            if (t.tgt >= 0 && t.tgt < 4) {
+                float k = (float)t.t / t.dur;
+                switch (t.kind) {
+                case 3: {                    // shake
+                    float amp = t.a[0] * (1 - k);
+                    G.bdx[t.tgt] = (t.t % 4 < 2 ? amp : -amp);
+                    G.bdy[t.tgt] = (t.t % 4 < 2 ? -t.a[1] : t.a[1]) * (1 - k);
+                } break;
+                case 4: {                    // scale battler
+                    float osc = t.a[4] > 0 ? fabsf(sinf(k * 3.1416f * t.a[4])) : 1.f;
+                    G.bsa[t.tgt] = t.a[0] + (t.a[1] - t.a[0]) * k * osc + (1 - osc);
+                    G.bsy[t.tgt] = t.a[2] + (t.a[3] - t.a[2]) * k * osc + (1 - osc);
+                } break;
+                case 5: case 6: {            // move battler (va-et-vient)
+                    float e = sinf(k * 3.1416f);
+                    G.bdx[t.tgt] = t.a[0] * e; G.bdy[t.tgt] = t.a[1] * e;
+                } break;
+                case 7: G.bdx[t.tgt] = t.a[0] > 0 ? k * 300 : (1 - k) * 300; break;
+                case 8: G.balp[t.tgt] = t.a[0] + (t.a[1] - t.a[0]) * k; break;
+                case 9: G.bdy[t.tgt] = t.a[0] * sinf(k * 6.28f) * 4.f; break;
+                }
+            }
+            if (t.kind == 1)                 // FadeBg
+                G.fadeA = t.a[0] + (t.a[1] - t.a[0]) * ((float)t.t / t.dur);
+            if (t.kind == 2 && t.tgt >= 0 && t.tgt < 4) {
+                float k = (float)t.t / t.dur;
+                G.flashC[0] = (uint8_t)t.a[0]; G.flashC[1] = (uint8_t)t.a[1]; G.flashC[2] = (uint8_t)t.a[2];
+                G.flashA[t.tgt] = k < 0.5f ? k * 2 : 2 - k * 2;
+            }
+            t.t++;
+        }
+        G.tasks.erase(std::remove_if(G.tasks.begin(), G.tasks.end(),
+            [](const FuncTask& t) { return t.t >= t.dur; }), G.tasks.end());
+        for (int i = 0; i < 4; i++)
+            if (G.bblink[i] > 0) G.bblink[i]--;
+        // émetteurs
+        for (auto& e : G.emit) {
+            if (!e.on || e.spa < 0 || e.spa >= 8 || !G.psys[e.spa]) continue;
+            Spa& s = *G.psys[e.spa];
+            if (e.res < 0 || e.res >= (int)s.res.size()) continue;
+            const SpaRes& r = s.res[e.res];
+            if (e.mvt >= 0) {                // déplacement d'émetteur
+                float k = fminf(1.f, (float)e.mvt++ / e.mdur);
+                e.x = e.mx0 + (e.mx1 - e.mx0) * k;
+                e.y = e.my0 + (e.my1 - e.my0) * k;
+                if (e.parab) e.y -= 4 * k * (1 - k) * 20.f;
+                if (k >= 1.f) e.mvt = -1;
+            }
+            e.t++;
+            if (e.t <= r.startDelay) continue;
+            int emT = e.t - r.startDelay;
+            if (emT <= r.emitLife || r.loop) {
+                int iv = r.interval > 0 ? r.interval : 1;
+                if (emT % iv == 0 && (int)G.parts.size() < 500)
+                    emit_one(e, s, r, false, e.x, e.y, 0);
+            }
+            if (emT > r.emitLife + (r.loop ? 99999 : 0) && !r.loop) {
+                bool alive = false;
+                for (auto& p : G.parts) if (p.spa == e.spa && p.res == e.res) { alive = true; break; }
+                if (!alive) e.on = false;
+            }
+        }
+        // particules
+        for (auto& p : G.parts) {
+            if (p.res < 0) continue;
+            Spa& s = *G.psys[p.spa];
+            const SpaRes& r = s.res[p.res];
+            p.age++;
+            p.vy += r.grav[1]; p.vx += r.grav[0]; p.vz += r.grav[2];
+            if (r.behav & 2 && p.age % (r.randIv ? r.randIv : 1) == 0) {
+                p.vx += frnd(-r.randv[0], r.randv[0]);
+                p.vy += frnd(-r.randv[1], r.randv[1]);
+                p.vz += frnd(-r.randv[2], r.randv[2]);
+            }
+            if (r.airRes) { float d = 1.f - r.airRes / 2550.f;
+                p.vx *= d; p.vy *= d; p.vz *= d; }
+            if (r.behav & 32) {              // convergence
+                p.vx += (r.conv[0] - p.x) * r.conv[3] * 0.01f;
+                p.vy += (r.conv[1] - p.y) * r.conv[3] * 0.01f;
+            }
+            p.x += p.vx; p.y += p.vy; p.z += p.vz;
+            if (p.age >= p.life) {
+                if (r.hasChild && !p.child) {   // enfants à la mort du parent
+                    for (int c = 0; c < (r.chCount ? r.chCount : 4); c++) {
+                        Particle q; q.spa = p.spa; q.res = p.res; q.child = true;
+                        q.x = p.x; q.y = p.y; q.z = p.z;
+                        float a = frnd(0, 6.2832f), sp = frnd(0.5f, 1.5f);
+                        q.vx = cosf(a) * sp; q.vy = sinf(a) * sp; q.vz = 0;
+                        q.life = r.chLife ? r.chLife : 20;
+                        q.scl = p.scl * r.chEndScale; q.ti = r.chTex;
+                        G.parts.push_back(q);
+                    }
+                }
+                p.res = -1;
+            }
+        }
+        G.parts.erase(std::remove_if(G.parts.begin(), G.parts.end(),
+            [](const Particle& p) { return p.res < 0; }), G.parts.end());
+        // VM
+        if (G.delay > 0 && --G.delay == 0) {}
+        if (G.waitTasks && G.tasks.empty()) G.waitTasks = false;
+        if (G.waitEmit) {
+            bool any = false;
+            for (auto& e : G.emit) if (e.on) { any = true; break; }
+            if (!any && G.parts.empty()) G.waitEmit = false;
+        }
+        if (!G.ended) vm_step();
+    }
+    // fin naturelle : script fini + plus rien à l'écran
+    if (G.ended && G.tasks.empty() && G.parts.empty()) {
+        bool any = false;
+        for (auto& e : G.emit) if (e.on) { any = true; break; }
+        if (!any) G.on = false;
+        for (int i = 0; i < 4; i++) { G.bdx[i] = G.bdy[i] = 0;
+            G.bsa[i] = G.bsy[i] = 1; G.balp[i] = 1; G.bhid[i] = false; }
+    }
+}
+
+// ── rendu ────────────────────────────────────────────────────────────────────
+void banim_draw(ImDrawList* dl, const float feet[4][2], float uds) {
+    if (!G.on || !dl) return;
+    if (G.fadeA > 0.f) {                     // FadeBg overlay plein écran
+        ImVec2 mx = ImGui::GetIO().DisplaySize;
+        dl->AddRectFilled({0, 0}, mx, IM_COL32(G.fadeC[0], G.fadeC[1],
+            G.fadeC[2], (int)(fminf(1.f, G.fadeA) * 255)));
+    }
+    if (G.parts.empty()) return;
+    // ancre = position des pieds du défenseur (le .spa positionne en relatif)
+    float ax = feet[G.def][0], ay = feet[G.def][1] - 20.f * uds;
+    for (const Particle& p : G.parts) {
+        Spa& s = *G.psys[p.spa];
+        const SpaRes& r = s.res[p.res];
+        float k = (float)p.age / p.life; if (k > 1) k = 1;
+        float sc = p.scl;
+        if (r.hasScale)                      // scale anim : S->M->E
+            sc *= k < r.scPeak / 100.f
+                ? r.scS + (r.scM - r.scS) * (k * 100 / (r.scPeak ? r.scPeak : 1))
+                : r.scM + (r.scE - r.scM) * ((k * 100 - r.scPeak) / (100 - (r.scPeak ? r.scPeak : 99)));
+        uint8_t cr = r.color[0], cg = r.color[1], cb = r.color[2];
+        if (r.hasColor) {                    // color anim : interpolation
+            float kk = fminf(1.f, k * 100 / (r.cEnd ? r.cEnd : 100));
+            float f = kk < 0.5f ? kk * 2 : 2 - kk * 2;
+            cr = (uint8_t)(r.cS[0] + (r.cE[0] - r.cS[0]) * f);
+            cg = (uint8_t)(r.cS[1] + (r.cE[1] - r.cS[1]) * f);
+            cb = (uint8_t)(r.cS[2] + (r.cE[2] - r.cS[2]) * f);
+        }
+        int al = r.alpha0;
+        if (r.hasAlpha) {                    // alpha anim S->M->E
+            int aa;
+            float kk = k * 100;
+            if (kk < r.aPk1) aa = r.aS + (r.aM - r.aS) * (int)(kk / (r.aPk1 ? r.aPk1 : 1));
+            else if (kk < r.aPk2) aa = r.aM;
+            else aa = r.aM + (r.aE - r.aM) * (int)((kk - r.aPk2) / (100 - (r.aPk2 ? r.aPk2 : 99)));
+            al = aa;
+        }
+        int ti = p.ti;
+        if (r.hasTexA && r.texN > 0)
+            ti = r.texFr[(p.age / (r.texStep ? r.texStep : 1)) % r.texN];
+        GLuint gl = (ti >= 0 && ti < (int)s.tex.size()) ? s.tex[ti].gl : 0;
+        float px = ax + (p.x + (p.child ? 0 : 0)) * uds;
+        float py = ay - (p.y + p.z * 0.5f) * uds;   // z ~ profondeur -> haut
+        float hw = (gl ? s.tex[ti].w : 16) * sc * uds * 0.5f;
+        float hh = (gl ? s.tex[ti].h : 16) * sc * uds * 0.5f * r.aspect;
+        ImU32 col = IM_COL32(cr, cg, cb, (int)(fminf(31.f, (float)al) * 8.2f));
+        if (gl) dl->AddImage((ImTextureID)(intptr_t)gl,
+            {px - hw, py - hh}, {px + hw, py + hh}, {0, 0}, {1, 1}, col);
+        else dl->AddCircleFilled({px, py}, hw > 1 ? hw : 1, col);
+    }
+}
+
+// accesseurs pour le rendu battler (offsets/scale/alpha/hide/flash par bid)
+extern "C" {
+float banim_bdx(int i) { return G.on && i >= 0 && i < 4 ? G.bdx[i] : 0; }
+float banim_bdy(int i) { return G.on && i >= 0 && i < 4 ? G.bdy[i] : 0; }
+float banim_bsx(int i) { return G.on && i >= 0 && i < 4 ? G.bsa[i] : 1; }
+float banim_bsy(int i) { return G.on && i >= 0 && i < 4 ? G.bsy[i] : 1; }
+float banim_balp(int i) { return G.on && i >= 0 && i < 4 ? G.balp[i] : 1; }
+int banim_bhid(int i) { return G.on && i >= 0 && i < 4 ? G.bhid[i] : 0; }
+int banim_bblink(int i) { return G.on && i >= 0 && i < 4 ? G.bblink[i] : 0; }
+float banim_flash(int i, uint8_t c[3]) {
+    if (!G.on || i < 0 || i >= 4 || G.flashA[i] <= 0) return 0;
+    c[0] = G.flashC[0]; c[1] = G.flashC[1]; c[2] = G.flashC[2];
+    return G.flashA[i];
+}
+}

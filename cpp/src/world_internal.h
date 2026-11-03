@@ -9,6 +9,7 @@ static inline int64_t ckey(int x, int y) { return ((int64_t)x << 32) | (uint32_t
 // comportements de tuile liés aux warps (map_tile_behavior.h DS)
 enum {
     TB_STAIRS_E = 0x5E, TB_STAIRS_W = 0x5F,
+    TB_STAIRS_N = 0x60, TB_STAIRS_S = 0x61,
     TB_ENTRANCE_E = 0x62, TB_ENTRANCE_W = 0x63,
     TB_ENTRANCE_N = 0x64, TB_ENTRANCE_S = 0x65,
     TB_WARP_PANEL = 0x67, TB_DOOR = 0x69,

@@ -81,8 +81,8 @@ struct M4 {
     M4 mul_s(float s) const {          // scale TOUT (poids skinning)
         M4 m; m.x = x*s; m.y = y*s; m.z = z*s; m.w = w*s; return m;
     }
-    M4 scale_basis(float s) const {    // cur *= scale : pas la translation
-        M4 m; m.x = x*s; m.y = y*s; m.z = z*s; return m;
+    M4 scale_basis(float s) const {    // cur *= S : basis scalée, translation préservée
+        M4 m; m.x = x*s; m.y = y*s; m.z = z*s; m.w = w; return m;
     }
     M4 add(const M4& o) const {
         M4 m; m.x = x+o.x; m.y = y+o.y; m.z = z+o.z; m.w = w+o.w; return m;

@@ -115,6 +115,21 @@ build.bat
 The output is `cpp/builddir/OpenPlatinum.exe`, with `SDL3.dll` and `data/headers.bin` next to it.
 Dear ImGui is vendored in `cpp/thirdparty/`.
 
+**macOS / Linux** — the code is portable (SDL3 + OpenGL 3.3 core, no Win32 API), only the build
+setup differs. A macOS arm64 binary is also produced by the `macOS` GitHub workflow on every push.
+
+```sh
+brew install sdl3 meson ninja        # macOS (Homebrew)
+# sudo apt install libsdl3-dev meson ninja-build   # Debian/Ubuntu equivalent
+
+cd cpp
+meson setup builddir && ninja -C builddir
+./builddir/OpenPlatinum              # run next to rom/ and data/headers.bin
+```
+
+Unsigned macOS binaries trigger Gatekeeper — right-click → Open, or
+`xattr -d com.apple.quarantine OpenPlatinum`.
+
 ### Run
 
 Put the ROM in `rom/` at the repository root (any `*.nds` filename), or pass it explicitly:

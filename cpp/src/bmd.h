@@ -68,6 +68,36 @@ struct JntAnim {
     bool ok = false;
 };
 JntAnim parse_bca(const Bytes& d);
+// ── BTA0 (SRT0) : animation de matériau — transform UV (fontaines, roues) ──
+// Blocs 'M',0,'A','T' : 5 canaux {nk u16, fl u16, data u32} à +0x1C.
+// fl=0x1000 -> data = offset clés s16 ; fl&0xFF==0x10 -> clés à fl>>8 ;
+// sinon data = valeur constante. Unités : scale /4096, trans /32 (texels,
+// fixe 1.10.5), rot u16/65536 tour.
+struct TexAnim {
+    struct Chan {
+        bool key = false;
+        float cst = 0.f;                 // valeur constante normalisée
+        std::vector<float> keys;         // valeurs par frame (normalisées)
+    };
+    std::string mat;                     // nom du matériau animé
+    int nframe = 0;
+    Chan su, sv, rot, tu, tv;
+};
+std::vector<TexAnim> parse_bta0(const Bytes& d);
+// ── BTP0 (PAT0) : swap de texture+palette par matériau (écrans, pales) ──
+// PAT0 : dict {rev,nent,sizeBlk,pad,ofsEntry} -> entrées {u32 ofsMPT, name16}
+// 'M',0,'P','T' : {u16 nframe, u8 ntex, u8 npal, u16 ofsTex, u16 ofsPal,
+//   dict tracks} ; dict tracks -> records {u32 nKey, u16 unk, u16 ofsKf}
+//   + noms 16B ; clés {u16 frame, u8 texIdx, u8 palIdx} à M.PT+ofsKf.
+struct TexPat {
+    struct Key { uint16_t frame = 0; uint8_t tex = 0, pal = 0; };
+    struct Track { std::string mat; std::vector<Key> keys; };
+    std::string name;                    // nom de l'anim (dict PAT0)
+    int nframe = 0;
+    std::vector<Track> tracks;
+    std::vector<std::string> texs, pals; // tables de noms indexées par les clés
+};
+std::vector<TexPat> parse_btp0(const Bytes& d);
 // matrice locale animée du nœud `node` à la frame entière (clampée) ;
 // `rest` = locale de repos du modèle pour les flags BASE_*.
 M4 bca_node(const JntAnim& a, int node, int frame, const M4& rest);

@@ -799,6 +799,147 @@ JntAnim parse_bca(const Bytes& d) {
     return a;
 }
 
+// lecture d'un canal SRT0 -> valeurs normalisées (scale /4096, trans /32
+// en texels, rot en radians). `unit`: 0=scale, 1=rot, 2=trans
+static void srt_chan(const Bytes& d, size_t mat, int nframe, int ch,
+                     TexAnim::Chan& out, int unit) {
+    size_t p = mat + 0x1C + ch * 8;
+    if (p + 8 > d.size()) return;
+    int nk = u16(d, p);
+    uint32_t fl = u16(d, p + 2);
+    uint32_t dt = u32(d, p + 4);
+    size_t kp = 0; int nk2 = nk;
+    if (fl == 0x1000) kp = mat + dt;               // offset clés s16, relatif M.AT
+    else if ((fl & 0xFF) == 0x10) { kp = fl >> 8; nk2 = nframe; } // off en haut
+    else {                                         // constante s32
+        float v = (float)(int32_t)dt;
+        if (unit == 0) out.cst = v / 4096.f;
+        else if (unit == 1) out.cst = (v < 0 || v > 0xFFFF) ? 0.f
+                                    : v / 65536.f * 6.2831853f;
+        else out.cst = (v > 1e6f || v < -1e6f) ? 0.f : v / 32.f;
+        out.key = false;
+        return;
+    }
+    if (!kp || kp + nk2 * 2 > d.size() || nk2 <= 0) {
+        if (unit == 0) out.cst = 1.f;
+        return;
+    }
+    out.key = true;
+    for (int i = 0; i < nk2; i++) {
+        int32_t v = (int16_t)u16(d, kp + i * 2);
+        if (unit == 0) out.keys.push_back(v / 4096.f);
+        else if (unit == 1) out.keys.push_back((float)(uint16_t)v / 65536.f * 6.2831853f);
+        else out.keys.push_back(v / 32.f);
+    }
+}
+
+// plus longue suite ASCII affichable dans [a,b) : nom du matériau
+static std::string srt_name(const Bytes& d, size_t a, size_t b) {
+    std::string best, cur;
+    if (b > d.size()) b = d.size();
+    for (size_t i = a; i < b; i++) {
+        uint8_t c = d[i];
+        if (c >= 0x20 && c < 0x7F) cur += (char)c;
+        else { if (cur.size() > best.size()) best = cur; cur.clear(); }
+    }
+    if (cur.size() > best.size()) best = cur;
+    return best;
+}
+
+std::vector<TexAnim> parse_bta0(const Bytes& d) {
+    std::vector<TexAnim> out;
+    if (d.size() < 0x40) return out;
+    for (size_t p = 0; p + 4 <= d.size(); p++) {
+        if (d[p] != 'M' || d[p + 1] != 0 || d[p + 2] != 'A' || d[p + 3] != 'T')
+            continue;
+        if (p + 0x1C + 40 > d.size()) continue;
+        TexAnim ta;
+        ta.nframe = u16(d, p + 4);
+        ta.mat = srt_name(d, p + 0x38, p + 0x60);
+        srt_chan(d, p, ta.nframe, 0, ta.su, 0);
+        srt_chan(d, p, ta.nframe, 1, ta.sv, 0);
+        srt_chan(d, p, ta.nframe, 2, ta.rot, 1);
+        srt_chan(d, p, ta.nframe, 3, ta.tu, 2);
+        srt_chan(d, p, ta.nframe, 4, ta.tv, 2);
+        out.push_back(std::move(ta));
+    }
+    return out;
+}
+
+// nom DS dans un champ de 16 octets (ASCII zeropaddé)
+static std::string name16(const Bytes& d, size_t o) {
+    std::string s;
+    for (int i = 0; i < 16 && o + i < d.size(); i++) {
+        uint8_t c = d[o + i];
+        if (!c) break;
+        s += (char)c;
+    }
+    return s;
+}
+
+// BTP0/PAT0 : swap de textures animées (éoliennes, écrans, enseignes).
+// Layout décodé sur bm_anime.narc (GBATEK + dumps) :
+//   PAT0+8 : dict -> entrées {u32 ofsUnit depuis PAT0, name[16]} = anims
+//   M.PT   : {u16 nframe, u8 ntex, u8 npal, u16 ofsTex, u16 ofsPal,
+//             dict tracks {rev,nent,sizeBlk,pad,ofsEntry}
+//             -> table {u16 unit=8, u16 ofsNames} + records {u32 nKey,
+//             u16 unk, u16 ofsKf depuis M.PT} + noms[16B]}
+//   clés   : nKey x {u16 frame, u8 texIdx, u8 palIdx}
+std::vector<TexPat> parse_btp0(const Bytes& d) {
+    std::vector<TexPat> out;
+    if (d.size() < 0x20 || memcmp(d.data(), "BTP0", 4)) return out;
+    int nblk = u16(d, 0x0E);
+    for (int b = 0; b < nblk && b < 8; b++) {
+        size_t pb = u32(d, 0x10 + b * 4);            // bloc PAT0
+        if (pb + 0x0C > d.size() || memcmp(d.data() + pb, "PAT0", 4)) continue;
+        size_t pd = pb + 8;                          // dict
+        if (pd + 8 > d.size()) continue;
+        int nent = d[pd + 1];
+        size_t tab = pd + u16(d, pd + 6);
+        if (tab + 4 > d.size()) continue;
+        for (int i = 0; i < nent && i < 16; i++) {
+            size_t e = tab + 4 + i * 20;             // {u32 ofs, name16}
+            if (e + 20 > d.size()) break;
+            size_t mp = pb + u32(d, e);              // -> M.PT
+            if (mp + 0x0C > d.size() || d[mp] != 'M' || d[mp + 1] != 0
+                || d[mp + 2] != 'P' || d[mp + 3] != 'T') continue;
+            TexPat tp;
+            tp.name = name16(d, e + 4);
+            tp.nframe = u16(d, mp + 4);
+            int ntex = d[mp + 6], npal = d[mp + 7];
+            size_t tof = mp + u16(d, mp + 8), pof = mp + u16(d, mp + 10);
+            for (int k = 0; k < ntex && tof + k * 16 + 16 <= d.size(); k++)
+                tp.texs.push_back(name16(d, tof + k * 16));
+            for (int k = 0; k < npal && pof + k * 16 + 16 <= d.size(); k++)
+                tp.pals.push_back(name16(d, pof + k * 16));
+            size_t td = mp + 0x0C;                   // dict des tracks
+            if (td + 8 > d.size()) { out.push_back(std::move(tp)); continue; }
+            int tn = d[td + 1];
+            size_t tt = td + u16(d, td + 6);
+            if (tt + 4 > d.size()) { out.push_back(std::move(tp)); continue; }
+            int unit = u16(d, tt);                   // 8 (records track)
+            int nofs = u16(d, tt + 2);               // -> noms (depuis tt)
+            for (int t = 0; t < tn && t < 32; t++) {
+                size_t r = tt + 4 + t * unit;
+                if (r + 8 > d.size()) break;
+                TexPat::Track tr;
+                tr.mat = name16(d, tt + nofs + t * 16);
+                int nkey = (int)u32(d, r);
+                size_t kf = mp + u16(d, r + 6);
+                for (int k = 0; k < nkey && kf + 4 <= d.size(); k++, kf += 4) {
+                    TexPat::Key k2;
+                    k2.frame = u16(d, kf); k2.tex = d[kf + 2]; k2.pal = d[kf + 3];
+                    if (k2.frame + 1 > tp.nframe) tp.nframe = k2.frame + 1;
+                    tr.keys.push_back(k2);
+                }
+                tp.tracks.push_back(std::move(tr));
+            }
+            out.push_back(std::move(tp));
+        }
+    }
+    return out;
+}
+
 M4 bca_node(const JntAnim& a, int node, int frame, const M4& rest) {
     int di = -1;
     for (size_t i = 0; i < a.nodes.size(); i++)
@@ -847,7 +988,7 @@ M4 bca_node(const JntAnim& a, int node, int frame, const M4& rest) {
     }
 
     Vec3 cols[3] = {                                    // row-major -> colonnes M4
-        {r[0], r[3], r[6]}, {r[1], r[4], r[7]}, {r[2], r[5], r[8]}
+        {r[0], r[1], r[2]}, {r[3], r[4], r[5]}, {r[6], r[7], r[8]}
     };
     return M4::trs(t, cols, s);
 }

@@ -1,6 +1,7 @@
 // battle.cpp — combat Gen4 : stats pl_personal, moves wotbl/pl_waza_tbl,
 // équipes trdata/trpoke, table des types + formule de dégâts DS.
 #include "battle.h"
+#include "banim.h"
 #include "nds.h"
 #include "msg.h"
 #include "world.h"
@@ -32,6 +33,16 @@ static bool personal(Nds* db, int sp, uint8_t st[6], int* t1, int* t2,
     return true;
 }
 
+// id du talent : pl_personal 0x16/0x17, choisi par le bit 0 du pid (DS)
+int battle_ability(Nds* db, int sp, uint32_t pid) {
+    auto n = db->narc(P_PERSONAL);
+    if (!n || sp < 0 || sp >= n->count()) return 0;
+    const Bytes& d = n->member(sp);
+    if (d.size() < 0x18) return 0;
+    int a1 = d[0x16], a2 = d[0x17];
+    return a2 && (pid & 1) ? a2 : a1;
+}
+
 // natures : pid%25 -> {stat+ , stat-} (0=Atk,1=Def,2=Spe,3=SpA,4=SpD, -1 neutre)
 static const int8_t NATURE[25][2] = {
     {-1,-1},{0,1},{0,2},{0,3},{0,4},
@@ -52,7 +63,7 @@ static int stat_st(int base, int lv, int iv, int ev = 0, int nat = 0, int s = -1
 }
 
 // 4 derniers moves du learnset ≤ niveau (wotbl : u16 move:9|level:7, fin 0xFFFF)
-static void default_moves(Nds* db, int sp, int lv, int out[4], int* n) {
+void default_moves(Nds* db, int sp, int lv, int out[4], int* n) {
     *n = 0;
     auto n0 = db->narc(P_WOTBL);
     if (!n0 || sp < 0 || sp >= n0->count()) return;
@@ -73,6 +84,22 @@ static void default_moves(Nds* db, int sp, int lv, int out[4], int* n) {
     if (!*n) { out[0] = 165; *n = 1; }                   // Lutte secours
 }
 
+// 6 stats DS : pv + att/def/vit/att.spe/def.spe (nature via pid%25)
+void battle_stats(Nds* db, int sp, int lv, uint32_t ivs, const uint8_t evs[6],
+                  uint32_t pid, int out[6]) {
+    uint8_t st[6]{}; int t1 = 0, t2 = 0;
+    personal(db, sp, st, &t1, &t2);
+    int nat = (int)(pid % 25);
+    out[0] = stat_hp(st[0], lv, iv_at(ivs, 0), evs[0]);
+    for (int s = 1; s < 6; s++)
+        out[s] = stat_st(st[s], lv, iv_at(ivs, s), evs[s], nat, s - 1);
+}
+
+void battle_types(Nds* db, int sp, int* t1, int* t2) {
+    uint8_t st[6]{}; *t1 = *t2 = -1;
+    personal(db, sp, st, t1, t2);
+}
+
 MoveInfo battle_move(Nds* db, int mv) {
     MoveInfo r{};
     auto n = db->narc(P_WAZA);
@@ -82,6 +109,8 @@ MoveInfo battle_move(Nds* db, int mv) {
     r.effect = u16(d, 0); r.cls = d[2]; r.power = d[3];
     r.type = d[4]; r.acc = d[5]; r.pp = d[6];
     r.chance = (int8_t)d[7];                          // % effet secondaire
+    r.range = u16(d, 8);                              // RANGE_* (ciblage doubles)
+    r.prio = (int8_t)d[10];                           // priorité DS (-6..+5)
     return r;
 }
 
@@ -95,24 +124,27 @@ std::string battle_move_name(Nds* db, int mv) {
     return "Move " + std::to_string(mv);
 }
 
-BatMon battle_make(Nds* db, int sp, int lv, const uint16_t* moves, int iv) {
+BatMon battle_make(Nds* db, int sp, int lv, const uint16_t* moves, uint32_t ivs) {
     BatMon m; m.species = sp; m.level = lv;
     uint8_t st[6]{};
     int t1 = 0, t2 = 0, frnd = 70;
     personal(db, sp, st, &t1, &t2, nullptr, nullptr, nullptr, &frnd);
     m.t1 = t1; m.t2 = t2;
-    if (iv < 0) iv = rand() % 32;                         // sauvage : 0-31 DS
-    m.iv = iv;
+    if (ivs == IVS_UNSET) {                               // sauvage : 0-31/stat DS
+        ivs = 0;
+        for (int s = 0; s < 6; s++) ivs |= (uint32_t)(rand() % 32) << (s * 5);
+    }
+    m.ivs = ivs;
     m.pid = (uint32_t)rand() << 17 ^ (uint32_t)rand() << 2 ^ (uint32_t)(rand() & 3);
     m.exp = mon_exp_for(db, sp, lv);
     m.friendship = frnd;
-    m.maxhp = stat_hp(st[0], lv, iv); m.hp = m.maxhp;
+    m.maxhp = stat_hp(st[0], lv, iv_at(ivs, 0)); m.hp = m.maxhp;
     int nat = (int)(m.pid % 25);
-    m.atk = stat_st(st[1], lv, iv, 0, nat, 0);
-    m.def = stat_st(st[2], lv, iv, 0, nat, 1);
-    m.spe = stat_st(st[3], lv, iv, 0, nat, 2);
-    m.spa = stat_st(st[4], lv, iv, 0, nat, 3);
-    m.spd = stat_st(st[5], lv, iv, 0, nat, 4);
+    m.atk = stat_st(st[1], lv, iv_at(ivs, 1), 0, nat, 0);
+    m.def = stat_st(st[2], lv, iv_at(ivs, 2), 0, nat, 1);
+    m.spe = stat_st(st[3], lv, iv_at(ivs, 3), 0, nat, 2);
+    m.spa = stat_st(st[4], lv, iv_at(ivs, 4), 0, nat, 3);
+    m.spd = stat_st(st[5], lv, iv_at(ivs, 5), 0, nat, 4);
     if (moves) {                                          // moves fournis (dresseur)
         for (int i = 0; i < 4 && moves[i]; i++) {
             m.moves[m.nmoves] = moves[i];
@@ -140,7 +172,7 @@ std::vector<BatMon> battle_trainer_party(Nds* db, int tid) {
     int dtype = h[0], np = h[3];
     int msize = dtype == 0 ? 8 : dtype == 1 ? 16 : dtype == 2 ? 10 : 18;
     for (int i = 0; i < np && i * msize + msize <= (int)d.size(); i++) {
-        int ivs = u16(d, i * msize + 0) * 31 / 255;         // ivScale DS -> 0-31
+        int ivsc = u16(d, i * msize + 0) * 31 / 255;        // ivScale DS -> 0-31
         int lv = u16(d, i * msize + 2);
         int sp = u16(d, i * msize + 4) & 0x3FF;
         if (!sp) continue;
@@ -149,9 +181,9 @@ std::vector<BatMon> battle_trainer_party(Nds* db, int tid) {
             int mo = dtype == 1 ? 6 : 8;
             uint16_t mv[4] = {};
             for (int k = 0; k < 4; k++) mv[k] = u16(d, i * msize + mo + k * 2);
-            m = battle_make(db, sp, lv, mv, ivs);
+            m = battle_make(db, sp, lv, mv, ivs_flat(ivsc));
         } else
-            m = battle_make(db, sp, lv, nullptr, ivs);
+            m = battle_make(db, sp, lv, nullptr, ivs_flat(ivsc));
         out.push_back(m);
     }
     return out;
@@ -164,6 +196,14 @@ std::pair<int,int> battle_trainer_class_sprite(Nds* db, int tid) {
     const Bytes& h = td->member(tid);
     if (h.size() < 4) return {-1, -1};
     return {h[1], h[2]};
+}
+
+// trdata[tid] @16 : battleType (BATTLE_TYPE_* de la ROM)
+int battle_trainer_battle_type(Nds* db, int tid) {
+    auto td = db->narc(P_TRDATA);
+    if (!td || tid < 0 || tid >= td->count()) return 0;
+    const Bytes& h = td->member(tid);
+    return h.size() >= 20 ? (int)u32(h, 16) : 0;
 }
 
 // ── table des types (sTypeMatchupMultipliers, battle_lib.c:2399) ──────────────
@@ -195,6 +235,9 @@ static int type_mul(int atk_t, const BatMon& d) {        // x2 : 0=immun .5=nve 
         if (e[0] == atk_t && (e[1] == d.t1 || e[1] == d.t2))
             m = e[2] == 0 ? 0 : e[2] == 1 ? m / 2 : m * 2; // nve=÷2, se=×2 (cumule)
     return m;                                            // quarts : 0,.5→2, 1→4, 2→8, 4→16
+}
+int battle_type_mul(int atk_t, const BatMon& d) {        // export pour l'UI
+    return type_mul(atk_t, d);
 }
 
 // ── modificateurs de combat : stages de stats + statuts ──────────────────────
@@ -234,32 +277,137 @@ int battle_damage(Nds* db, const BatMon& at, const BatMon& df,
     return dmg;
 }
 
-// ── un round : file {ordre(0=joueur), def, move} triée par vitesse ────────────
-void battle_round(Battle& b, Nds* db, int mvP) {
+// ── un round : file {battler, cible, action, arg} triée prio+vitesse ──────────
+// slot vivant dans un camp (index équipe) ; -1 = aucun
+static int alive_idx(Battle& b, int side, int slot) {
+    int i = b.act_idx(side, slot);
+    auto& v = side ? b.foes : b.me;
+    return i >= 0 && i < (int)v.size() && !v[i].fainted() ? i : -1;
+}
+// premier battler vivant d'un camp (pour fuite/cible par défaut)
+static int first_alive_bid(Battle& b, int side) {
+    for (int s = 0; s < 2; s++)
+        if (alive_idx(b, side, s) >= 0) return Battle::bid(side, s);
+    return Battle::bid(side, 0);
+}
+// cible de l'IA selon la portée du move
+static int ai_target(Battle& b, int side, int range) {
+    int os = side ^ 1;
+    switch (range) {
+    case RANGE_USER: return Battle::bid(side, 0);
+    case RANGE_ALLY: case RANGE_USER_OR_ALLY:
+        return alive_idx(b, side, 1) >= 0 ? Battle::bid(side, 1)
+                                          : Battle::bid(side, 0);
+    case RANGE_USER_SIDE: case RANGE_FIELD: case RANGE_FOE_SIDE:
+    case RANGE_ALL_FOES: case RANGE_ALL_ADJACENT: case RANGE_ALL:
+        return -1;                                   // multi/terrain : pas de cible
+    }
+    int alive[2], an = 0;                            // adverse : slot au hasard
+    for (int s = 0; s < 2; s++)
+        if (alive_idx(b, os, s) >= 0) alive[an++] = Battle::bid(os, s);
+    return an ? alive[rand() % an] : Battle::bid(os, 0);
+}
+// portée où le joueur choisit la cible en doubles (DS)
+static bool tgt_pickable(int range) {
+    return range == RANGE_SINGLE || range == RANGE_SINGLE_SPECIAL ||
+           range == RANGE_RANDOM_FOE || range == RANGE_ALLY ||
+           range == RANGE_USER_OR_ALLY;
+}
+// liste des battlers valides pour une portée donnée (camp du joueur `side`)
+static int tgt_list(Battle& b, int side, int range, int out[4]) {
+    int n = 0, os = side ^ 1;
+    auto put = [&](int t) {
+        BatMon* m = b.bmon(t);
+        if (m && !m->fainted()) out[n++] = t;
+    };
+    int self = Battle::bid(side, b.pick);             // ALLY : pas soi-même
+    switch (range) {
+    case RANGE_ALLY: case RANGE_USER_OR_ALLY:
+        for (int s = 0; s < 2; s++) {
+            int t = Battle::bid(side, s);
+            if (t == self && range == RANGE_ALLY) continue;
+            put(t);
+        }
+        break;
+    default:                                          // adverses
+        for (int s = 0; s < 2; s++) put(Battle::bid(os, s));
+        break;
+    }
+    return n;
+}
+// cible par défaut du curseur (premier slot adverse vivant)
+static int def_tsel(Battle& b, int slot, int range) {
+    if (range == RANGE_ALLY || range == RANGE_USER_OR_ALLY)
+        return Battle::bid(0, 1 - slot);
+    for (int s = 0; s < 2; s++)
+        if (alive_idx(b, 1, s) >= 0) return Battle::bid(1, s);
+    return Battle::bid(1, 0);
+}
+void battle_round(Battle& b, Nds* db) {
     b.qn = b.qi = 0; b.lastDmg = 0; b.lastEff = 100;
     b.turns++;                                     // tour (Chrono Ball)
-    // move ennemi : premier move avec pp>0 au hasard
-    int mF = -1, trym = 0;
-    do {
-        mF = rand() % 4; trym++;
-    } while (trym < 8 && (mF >= b.foe().nmoves || b.foe().pp[mF] <= 0 ||
-             !b.foe().moves[mF]));
-    if (mF >= b.foe().nmoves || b.foe().pp[mF] <= 0) mF = 0;
-    int me1 = mvP >= 0 ? mvP : -1;
-    // priorité du move (DS : prio puis vitesse ; égalité = pile)
-    int priP = mvP >= 0 && mvP < b.you().nmoves
-        ? battle_move(db, b.you().moves[mvP]).effect == 103 ? 1 : 0 : 0;
-    int priF = mF < b.foe().nmoves
-        ? battle_move(db, b.foe().moves[mF]).effect == 103 ? 1 : 0 : 0;
-    bool meFirst = priP != priF ? priP > priF
-        : eff_spe(b.you()) > eff_spe(b.foe()) ||
-        (eff_spe(b.you()) == eff_spe(b.foe()) && (rand() & 1));
-    if (meFirst) {
-        b.queue[b.qn][0] = 0; b.queue[b.qn][1] = me1; b.qn++;
-        b.queue[b.qn][0] = 1; b.queue[b.qn][1] = mF; b.qn++;
-    } else {
-        b.queue[b.qn][0] = 1; b.queue[b.qn][1] = mF; b.qn++;
-        b.queue[b.qn][0] = 0; b.queue[b.qn][1] = me1; b.qn++;
+    struct Ent { int bid, tgt, act, arg, pri, spe; };
+    Ent ents[8]; int n = 0;
+    auto push = [&](int side, int slot, int tgt, int act, int arg, int pri) {
+        int i = b.act_idx(side, slot);
+        if (i < 0) return;
+        BatMon& m = (side ? b.foes : b.me)[i];
+        ents[n] = {Battle::bid(side, slot), tgt, act, arg, pri, eff_spe(m)};
+        n++;
+    };
+    // actions du joueur (choisies dans CHOICE/PICKMOVE/PICKTGT)
+    for (int s = 0; s < 2; s++) {
+        if (alive_idx(b, 0, s) < 0) continue;
+        int mv = b.sel_mv[s], tgt = b.sel_tg[s];
+        if (mv == -2) continue;                    // item utilisé (hors file)
+        if (mv == -4) { push(0, s, -1, -4, tgt, 7); continue; }   // switch
+        if (mv == -1) { push(0, s, -1, -1, 0, 6); continue; }     // fuite
+        int pri = 0, act = mv;
+        BatMon& m = b.me[b.act_idx(0, s)];
+        if (mv >= 0 && mv < m.nmoves)
+            pri = battle_move(db, m.moves[mv]).prio;
+        else if (mv != -3) act = -3;               // inconnu -> Lutte
+        if (act >= 0) {
+            int r = battle_move(db, m.moves[mv]).range;
+            if (tgt < 0) tgt = ai_target(b, 0, r); // cible par défaut/portée
+        }
+        push(0, s, tgt, act, 0, pri);
+    }
+    // actions ennemies : move au hasard avec PP, cible selon portée
+    for (int s = 0; s < 2; s++) {
+        int ai = alive_idx(b, 1, s);
+        if (ai < 0) continue;
+        BatMon& m = b.foes[ai];
+        if (m.run_away && !b.trainer) {            // roamer DS : fuit
+            push(1, s, -1, -5, 0, 0); continue;
+        }
+        int mF = -3, tries = 0;                    // -3 = Lutte si tout à 0
+        do { mF = rand() % 4; tries++; }
+        while (tries < 8 && (mF >= m.nmoves || m.pp[mF] <= 0 ||
+               !m.moves[mF]));
+        if (mF >= m.nmoves || m.pp[mF] <= 0 || !m.moves[mF]) mF = -3;
+        int pri = 0, tgt = -1;
+        if (mF >= 0) {
+            MoveInfo mi2 = battle_move(db, m.moves[mF]);
+            pri = mi2.prio;
+            tgt = ai_target(b, 1, mi2.range);
+        } else tgt = ai_target(b, 1, RANGE_RANDOM_FOE);
+        push(1, s, tgt, mF, 0, pri);
+    }
+    // tri DS : priorité décroissante puis vitesse, égalité au hasard
+    for (int i = 1; i < n; i++) {
+        Ent e = ents[i]; int j = i - 1;
+        while (j >= 0 && (ents[j].pri < e.pri ||
+               (ents[j].pri == e.pri &&
+                (ents[j].spe < e.spe ||
+                 (ents[j].spe == e.spe && (rand() & 1))))))
+            { ents[j + 1] = ents[j]; j--; }
+        ents[j + 1] = e;
+    }
+    for (int i = 0; i < n; i++) {
+        b.queue[b.qn][0] = ents[i].bid; b.queue[b.qn][1] = ents[i].tgt;
+        b.queue[b.qn][2] = ents[i].act; b.queue[b.qn][3] = ents[i].arg;
+        b.qn++;
     }
 }
 
@@ -268,28 +416,35 @@ void battle_round(Battle& b, Nds* db, int mvP) {
 // sinon 4 jets sous p = (0xFFFF<<4) / sqrt(sqrt(0xFF*0x10000/rate)).
 int battle_catch(Nds* db, Battle& b, int item) {
     if (item == 1) return 4;                            // Master Ball
+    BatMon* fp = b.bmon(first_alive_bid(b, 1));         // le sauvage vivant
+    if (!fp) return 0;
+    BatMon& tgt = *fp;
     int rate = 255;
     auto n = db->narc(P_PERSONAL);
-    if (n && b.foe().species >= 0 && b.foe().species < n->count()) {
-        const Bytes& d = n->member(b.foe().species);
+    if (n && tgt.species >= 0 && tgt.species < n->count()) {
+        const Bytes& d = n->member(tgt.species);
         if (d.size() >= 9) rate = d[8];
     }
     int bm = 10;                                        // Poké Ball et co.
-    bool wtr = b.foe().t1 == 10 || b.foe().t2 == 10,    // type eau / insecte
-         bug = b.foe().t1 == 6  || b.foe().t2 == 6;
+    bool wtr = tgt.t1 == 10 || tgt.t2 == 10,            // type eau / insecte
+         bug = tgt.t1 == 6  || tgt.t2 == 6;
     switch (item) {
     case 2: bm = 20; break;                             // Hyper Ball
     case 3: bm = 15; break;                             // Super Ball
     case 5: bm = 15; break;                             // Safari Ball
     case 6:  if (wtr || bug) bm = 30; break;            // Filet Ball
     case 7:  if (b.terrain == 7) bm = 35; break;        // Scuba Ball (eau)
-    case 8:  bm = b.foe().level < 40 ? std::max(10, 40 - b.foe().level) : 10; break; // Faiblo
+    case 8:  bm = tgt.level < 40 ? std::max(10, 40 - tgt.level) : 10; break; // Faiblo
     case 10: bm = std::min(40, 10 + b.turns); break;    // Chrono Ball
     case 13: if (b.tod == 2 || b.terrain == 5) bm = 35; break; // Sombre (nuit/grotte)
     case 15: if (b.turns < 1) bm = 40; break;           // Rapide Ball
     }
     long cr = (long)rate * bm / 10;
-    cr = cr * (3L * b.foe().maxhp - 2L * b.foe().hp) / (3L * b.foe().maxhp);
+    cr = cr * (3L * tgt.maxhp - 2L * tgt.hp) / (3L * tgt.maxhp);
+    // DS : statut -> x2 sommeil/gel, x1.5 poison/brûlure/paralysie
+    if (tgt.cond & 0x27) cr *= 2;
+    else if (tgt.cond & 0xD8) cr = cr * 3 / 2;
+    if (b.tutorial) return 4;                        // tuto : capture garantie
     if (cr >= 255) return 4;
     double a = (255.0 * 65536.0) / cr;                  // 0xFF<<16 / rate
     int p = (int)((65536.0 * 16.0) / sqrt(sqrt(a)));    // (0xFFFF<<4)/sqrt⁴
@@ -346,9 +501,14 @@ static bool set_cond(Battle& b, Nds* db, BatMon& m, uint32_t c,
     return true;
 }
 
-// effet d'un move après la touche (dmg = dégâts infligés, side = attaquant)
+// helpers définis plus bas (ciblage/reset au switch)
+static void reset_volatile(BatMon& m);
+static int next_bench(Battle& b, int side, int slot = 0, int from = 0);
+
+// effet d'un move après la touche (dmg = dégâts infligés, side = attaquant,
+// tbid = battler id de la cible pour les effets positionnels comme Roar)
 static void apply_effect(Battle& b, Nds* db, BatMon& at, BatMon& df,
-    const MoveInfo& mv, int dmg, int side, bool sec) {
+    const MoveInfo& mv, int dmg, int side, int tbid, bool sec) {
     static const int ST_MAP[7] = {0, 1, 4, 2, 3, 5, 6};   // ordre table DS
     switch (mv.effect) {
     // ── statut primaire (moves pow=0 : toujours appliqué à la touche) ──
@@ -366,7 +526,11 @@ static void apply_effect(Battle& b, Nds* db, BatMon& at, BatMon& df,
     case 49:  if (!df.cond && !df.conf) { df.conf = 2 + rand() % 4;
         b.msg += "\n" + battle_species_name(db, df.species) +
             tr(" devient confus !", " became confused!"); } break;
-    case 120: case 199:                       // Attraction / tout confus
+    case 120:                                   // Attraction : 50% immobilisé,
+        if (!df.attract) { df.attract = true;   // jusqu'au switch/KO (DS)
+            b.msg += "\n" + battle_species_name(db, df.species) +
+                tr(" tombe amoureux !", " fell in love!"); } break;
+    case 199:                                   // Teeter Dance : confusion
         if (!df.conf) { df.conf = 2 + rand() % 4;
             b.msg += "\n" + battle_species_name(db, df.species) +
                 tr(" devient confus !", " became confused!"); } break;
@@ -450,7 +614,7 @@ static void apply_effect(Battle& b, Nds* db, BatMon& at, BatMon& df,
         b.msg += "\n" + battle_species_name(db, at.species) +
             tr(" récupère des PV !", " regained health!"); } break;
     case 37:                                                  // Rest
-        at.hp = at.maxhp; at.cond = 2; at.conf = 0;           // dort 2 tours
+        at.hp = at.maxhp; at.cond = 3; at.conf = 0;           // Repos : dort 2 tours
         b.msg += "\n" + battle_species_name(db, at.species) +
             tr(" s'endort et récupère !", " went to sleep and recovered!"); break;
     case 102: case 193: {                                     // soin du statut
@@ -489,19 +653,27 @@ static void apply_effect(Battle& b, Nds* db, BatMon& at, BatMon& df,
     case 27:  at.conf = 2;                                    // rampage → confus
         b.msg += "\n" + battle_species_name(db, at.species) +
             tr(" devient confus !", " became confused!"); break;
-    case 28:  if (!side) {                                    // Roar sauvage
-        b.st = Battle::FLEE; b.won = 1;
-        b.msg += tr("\nLe combat prend fin !", "\nThe battle ended!"); }
-        else { int nx = -1;
-            for (int i = b.fi + 1; i < (int)b.foes.size(); i++)
-                if (!b.foes[i].fainted()) { nx = i; break; }
-            if (nx >= 0) { b.fi = nx;
-                b.msg += tr("\nL'ennemi est forcé de changer !",
-                            "\nThe foe was switched!"); }
-            else b.st = Battle::FLEE, b.won = 1; }
-        break;
-    case 153: b.st = Battle::FLEE;                            // Teleport
-        b.won = side == 0 ? 0 : 1;
+    case 28: {                                              // Roar : switch forcé
+        int ds = Battle::bid_side(tbid), dslot = Battle::bid_slot(tbid);
+        if (!b.trainer && ds == 1) {                        // sauvage adverse fuit
+            b.st = Battle::FLEE; b.won = 1;
+            b.msg += tr("\nLe combat prend fin !", "\nThe battle ended!");
+            break;
+        }
+        int nx = next_bench(b, ds, dslot);                  // remplaçant du slot
+        if (nx >= 0) {
+            reset_volatile(df);
+            if (ds) { if (dslot) b.fi2 = nx; else b.fi = nx; }
+            else    { if (dslot) b.mi2 = nx; else b.mi = nx;
+                      b.me_part |= 1 << nx; }
+            b.msg += tr("\nLe Pokémon est forcé de changer !",
+                        "\nThe Pokémon was switched out!");
+        } else if (!b.trainer) { b.st = Battle::FLEE; b.won = 1; }
+        else b.msg += tr("\nMais ça a raté !", "\nBut it failed!");
+        break; }
+    case 153:                                   // Teleport : échoue vs dresseur
+        if (b.trainer) { b.msg += tr("\nMais ça a échoué !", "\nBut it failed!"); break; }
+        b.st = Battle::FLEE; b.won = side == 0 ? 0 : 1;
         b.msg += "\n" + battle_species_name(db, at.species) +
             tr(" s'enfuit !", " fled!"); break;
     case 101: if (df.hp <= 0) df.hp = 1; break;               // False Swipe
@@ -549,7 +721,7 @@ static void apply_effect(Battle& b, Nds* db, BatMon& at, BatMon& df,
         case 273: case 274: case 275: {                   // flinch si pas encore agi
             if (!df.fainted())
                 for (int k = b.qi; k < b.qn; k++)
-                    if (b.queue[k][0] == (side ^ 1)) { df.flinch = true; break; }
+                    if (b.queue[k][0] == tbid) { df.flinch = true; break; }
             } break;
         case 76: case 267:
             if (!df.conf && !df.fainted()) { df.conf = 2 + rand() % 4;
@@ -590,6 +762,27 @@ static void apply_effect(Battle& b, Nds* db, BatMon& at, BatMon& df,
     }
 }
 
+// réinitialise les états volatils d'un Pokémon qui sort du terrain (DS)
+static void reset_volatile(BatMon& m) {
+    for (int k = 0; k < 8; k++) m.stg[k] = 0;
+    m.conf = 0; m.seeded = false; m.bound = 0;
+    m.toxic_n = 0; m.ingrain = false; m.drowsy = 0;
+    m.recharge = false; m.flinch = false; m.prot = false;
+    m.endure = false; m.turns_out = 0; m.attract = false;
+}
+// premier index d'équipe non-KO et non déjà sur le terrain
+static int next_bench(Battle& b, int side, int slot, int from) {
+    auto& v = side ? b.foes : b.me;
+    int lo = 0, hi = (int)v.size();
+    // combat duo : la réserve du slot est celle de SON dresseur
+    if (side && b.foe_split > 0) { if (slot) lo = b.foe_split; else hi = b.foe_split; }
+    for (int i = std::max(lo, from); i < hi; i++) {
+        if (v[i].fainted()) continue;
+        if (i == b.act_idx(side, 0) || i == b.act_idx(side, 1)) continue;
+        return i;
+    }
+    return -1;
+}
 // machine à états ; keys : 'E' confirmer, 'Q' retour, 'WASD' déplacer curseur
 void battle_update(Battle& b, Nds* db, float dt, int key) {
     // timers d'animation combat (propulsion / flash de touche / jauges PV)
@@ -597,9 +790,12 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         b.atk_t += dt * 3.2f;                        // ~0.3s aller-retour
         if (b.atk_t >= 1.f) b.atk_side = -1;
     }
+    banim_update(b, dt);                            // particules + script we.arc
     if (b.hit_t > 0.f) { b.hit_t -= dt; if (b.hit_t <= 0.f) b.hit_side = -1; }
-    for (int s = 0; s < 2; s++) {                    // jauge PV glisse vers réel
-        int real = s ? b.foe().hp : b.you().hp;
+    for (int s = 0; s < 4; s++) {                    // jauge PV glisse vers réel
+        BatMon* m = b.bmon(s);
+        if (!m) continue;
+        int real = m->hp;
         float& d = b.disp_hp[s];
         if (d <= 0.f) d = (float)real;
         if (d > (float)real) { d -= dt * 60.f; if (d < real) d = (float)real; }
@@ -609,22 +805,59 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         if (real > 0) b.faint_t[s] = 0.f;
     }
     if (!b.active) return;
-    BatMon& you = b.you(), &foe = b.foe();
+    // avance au prochain slot à commander ; sinon lance l'exécution du tour
+    auto next_pick = [&]() {
+        if (b.dbl) {
+            for (int s = b.pick + 1; s < 2; s++)
+                if (alive_idx(b, 0, s) >= 0) { b.pick = s; b.sel = 0;
+                    b.st = Battle::CHOICE; return; }
+        }
+        battle_round(b, db);                      // file complète puis EXEC
+        b.st = Battle::EXEC; b.anim = 0.0f; b.qi = 0; b.eor = 0;
+    };
     auto act = [&]() {                       // traiter une entrée de la file
-        int side = b.queue[b.qi][0], mvI = b.queue[b.qi][1];
-        BatMon& at = side ? foe : you, &df = side ? you : foe;
+        int bid = b.queue[b.qi][0], tbid = b.queue[b.qi][1];
+        int mvI = b.queue[b.qi][2], arg = b.queue[b.qi][3];
         b.qi++;
-        if (at.fainted() || df.fainted()) return;
-        if (mvI < 0) {                       // tentative de fuite (formule DS)
-            b.tries++;
-            int lim = (df.spe / 4) & 0xFF;
-            if (!lim) lim = 1;
-            int odds = ((at.spe * 32) / lim) & 0xFF;   // %256 puis +30 par essai
-            if (at.spe >= df.spe || rand() % 256 <
-                    std::min(255, odds + b.tries * 30)) {
+        BatMon* atp = b.bmon(bid);
+        if (!atp || atp->fainted()) return;
+        BatMon& at = *atp;
+        int side = Battle::bid_side(bid);
+        if (mvI == -4) {                       // switch (arg = index équipe)
+            auto& v = side ? b.foes : b.me;
+            if (arg >= 0 && arg < (int)v.size() && !v[arg].fainted()) {
+                reset_volatile(at);
+                if (side) (bid & 2) ? b.fi2 = arg : b.fi = arg;
+                else      (bid & 2) ? b.mi2 = arg : b.mi = arg;
+                if (!side) b.me_part |= 1 << arg;
+                b.msg = tr(side ? "L'ennemi rappelle " : "",
+                           side ? "The foe called back " : "") +
+                    battle_species_name(db, at.species) + " !\n" +
+                    tr(side ? "Il envoie " : "En avant, ",
+                       side ? "They send out " : "Go, ") +
+                    battle_species_name(db, v[arg].species) + " !";
+                b.anim = 1.2f;
+            }
+            return;
+        }
+        if (mvI == -5) {                       // roamer : fuite ennemie
+            b.st = Battle::FLEE; b.won = 1;
+            b.msg = battle_species_name(db, at.species) +
+                tr(" s'enfuit !", " fled!"); b.anim = 0.8f;
+            return;
+        }
+        if (mvI == -1) {                       // tentative de fuite (formule DS)
+            // DS : A = (spe_fuyard*128 / spe_adv) %256 + 30*essais ; l'essai
+            // n'incrémente qu'après un échec ; l'ennemi attaque ensuite.
+            BatMon* fp = b.bmon(first_alive_bid(b, 1));
+            int fspe = fp ? fp->spe : 1;
+            int odds = ((at.spe * 128) / std::max(1, fspe)) & 0xFF;
+            if (at.spe >= fspe ||
+                rand() % 256 < odds + b.tries * 30) {
                 b.st = Battle::FLEE; b.won = -1;
                 b.msg = tr("Vous prenez la fuite !", "Got away safely!"); b.anim = 0;
             } else {
+                b.tries++;
                 b.msg = tr("Fuite impossible !", "Can't escape!"); b.anim = 1.0f;
             }
             return;
@@ -673,36 +906,85 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
                             " is paralyzed! It can't move!");
             b.anim = 0.9f; return;
         }
+        if (at.attract && rand() & 1) {                   // Attraction : 50% DS
+            b.msg = nm + tr(" est immobilisé par l'amour !",
+                            " is immobilized by love!");
+            b.anim = 0.9f; return;
+        }
         at.turns_out++;
-        MoveInfo mv = battle_move(db, at.moves[mvI]);
+        int mid = mvI == -3 ? 165 : at.moves[mvI];   // -3 = Lutte (Struggle)
+        MoveInfo mv = battle_move(db, mid);
         if (getenv("BTLDBG"))
-            printf("   [act] side=%d mvI=%d id=%d pow=%d cls=%d acc=%d eff=%d\n",
-                side, mvI, mvI >= 0 ? at.moves[mvI] : -1, mv.power, mv.cls,
-                mv.acc, mv.effect);
-        // Protect adverse : le move est bloqué
-        if (df.prot && mv.effect != 223 && mv.power >= 0) {
-            b.msg = battle_species_name(db, df.species) +
-                tr(" se protège !", " protected itself!");
-            df.prot = false; b.anim = 0.9f; return;
+            printf("   [act] bid=%d mvI=%d id=%d pow=%d cls=%d acc=%d eff=%d rng=%d\n",
+                bid, mvI, mid, mv.power, mv.cls, mv.acc, mv.effect, mv.range);
+        // ── cibles réelles selon la portée (MOVE_RANGE DS) ────────────────
+        int tbids[4]; int nt = 0;
+        auto add_t = [&](int t) {
+            BatMon* m = b.bmon(t);
+            if (m && !m->fainted()) tbids[nt++] = t;
+        };
+        int oside = side ^ 1, oslot = 1 - Battle::bid_slot(bid);
+        switch (mv.range) {
+        case RANGE_USER: add_t(bid); break;
+        case RANGE_ALLY: case RANGE_USER_OR_ALLY:
+            add_t(tbid >= 0 ? tbid : Battle::bid(side, oslot)); break;
+        case RANGE_USER_SIDE: case RANGE_FIELD: case RANGE_FOE_SIDE:
+            add_t(tbid >= 0 ? tbid : first_alive_bid(b, oside)); break;
+        case RANGE_ALL_FOES:
+            for (int s = 0; s < 2; s++) add_t(Battle::bid(oside, s)); break;
+        case RANGE_ALL_ADJACENT:
+            for (int s = 0; s < 2; s++) add_t(Battle::bid(oside, s));
+            add_t(Battle::bid(side, oslot)); break;
+        case RANGE_ALL:
+            for (int s = 0; s < 2; s++) add_t(Battle::bid(oside, s));
+            add_t(Battle::bid(side, oslot)); add_t(bid); break;
+        case RANGE_RANDOM_FOE: tbid = ai_target(b, side, mv.range);
+            [[fallthrough]];
+        default: {                                   // 1 cible ; DS : si tombée,
+            add_t(tbid);                             // repart sur l'autre slot
+            if (!nt) for (int s = 0; s < 2; s++)     // adverse vivant
+                if (Battle::bid(oside, s) != tbid) add_t(Battle::bid(oside, s));
+            break; }
+        }
+        if (!nt) {                                   // plus aucune cible :
+            b.msg = nm + tr(" rate son attaque !",   // le move échoue
+                            "'s attack missed!");    //  (cibles déjà K.O.)
+            b.anim = 1.0f; return;
         }
         if (!b.msg.empty()) b.msg += "\n";
         b.msg += nm + tr(" utilise ", " used ") +
-            battle_move_name(db, at.moves[mvI]) + " !";
-        b.atk_side = side; b.atk_t = 0.f;              // propulsion attaquant
-        if (mvI < at.nmoves && at.pp[mvI] > 0) at.pp[mvI]--;
+            battle_move_name(db, mid) + " !";
+        b.atk_side = bid; b.atk_t = 0.f;             // propulsion attaquant
+        banim_start(b, mid, bid, tbid);             // anim DS we.arc du move
+        if (mvI >= 0 && mvI < at.nmoves && at.pp[mvI] > 0) at.pp[mvI]--;
+        bool sec = mv.chance > 0 && rand() % 100 < mv.chance;
+        int anyfaint = 0;
+        for (int ti = 0; ti < nt; ti++) {            // ── boucle par cible ──
+        int tside = Battle::bid_side(tbids[ti]);
+        BatMon& df = *b.bmon(tbids[ti]);
+        // Protect adverse : le move est bloqué
+        if (df.prot && mv.effect != 223 && mv.power >= 0) {
+            b.msg += "\n" + battle_species_name(db, df.species) +
+                tr(" se protège !", " protected itself!");
+            df.prot = false; continue;
+        }
         // précision effective : acc ± stages att/def ; acc=0 -> jamais raté
         int accv = mv.acc;
         if (accv && (at.stg[5] || df.stg[6]))
             accv = accv * stg_acc(100, at.stg[5]) / stg_acc(100, df.stg[6]);
+        if (accv && b.weather == BW_FOG)                  // brume : acc x0.6
+            accv = accv * 6 / 10;
+        if (b.weather == BW_RAIN && mid == 87)            // Tonnerre : jamais raté
+            accv = 0;
         if (accv && rand() % 100 >= accv) {
-            b.msg = nm + tr(" rate son attaque !", "'s attack missed!");
+            b.msg += "\n" + battle_species_name(db, df.species) +
+                tr(" évite l'attaque !", " avoided the attack!");
             if (mv.effect == 45) {                        // crash : at -50% PV
                 at.hp = std::max(0, at.hp - at.maxhp / 2);
                 b.msg += "\n" + nm + tr(" s'écrase !", " crashed!");
             }
-            b.anim = 1.0f; return;
+            continue;
         }
-        bool sec = mv.chance > 0 && rand() % 100 < mv.chance;
         int dmg = 0;
         // dégâts fixes/OHKO : l'effet gère tout, pas de formule
         static const int FIXE[] = {38, 40, 41, 87, 88, 126, 130, 189};
@@ -716,26 +998,33 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
             if (mv.effect == 221 && at.hp * 2 <= at.maxhp) mv2.power *= 2;
             if (mv.effect == 121) mv2.power = std::max(1, at.friendship * 10 / 25);
             if (mv.effect == 123) mv2.power = std::max(1, (255 - at.friendship) * 10 / 25);
-            if (mv.effect == 29 || mv.effect == 77) {              // multi-hit
-                int r = rand() % 100;
-                hits = r < 35 ? 2 : r < 70 ? 3 : r < 85 ? 4 : 5;
+            if (mv.effect == 29 || mv.effect == 77) {              // multi-hit DS
+                int r = rand() % 8;                    // 37.5/37.5/12.5/12.5
+                hits = r < 3 ? 2 : r < 6 ? 3 : r < 7 ? 4 : 5;
             } else if (mv.effect == 44) hits = 2;
             else if (mv.effect == 104) hits = 3;
             for (int h = 0; h < hits && !df.fainted(); h++) {
                 int eff; int d = battle_damage(db, at, df, mv2, eff);
+                if (d > 0 && nt > 1)                      // dispersion Gen4 :
+                    d = std::max(1, d * 3 / 4);           // multi-cibles x0.75
+                if (d > 0 && b.weather == BW_RAIN)        // pluie : Eau x1.5 Feu x0.5
+                    d = mv2.type == 11 ? std::max(1, d * 3 / 2)
+                        : mv2.type == 10 ? std::max(1, d / 2) : d;
                 // coup critique DS : base 1/16, +1 stage (haut crit) = 1/8
                 int cs = at.stg[7] + ((mv.effect == 43 || mv.effect == 200 ||
                                        mv.effect == 209) ? 1 : 0);
                 static const int CR[5] = {16, 8, 4, 3, 2};
-                if (rand() % CR[std::min(4, cs)] == 0 && d > 0) {
+                bool crit = rand() % CR[std::min(4, cs)] == 0 && d > 0;
+                if (crit) {
                     d *= 2;
                     if (h == 0) b.msg += tr("\nCoup critique !", "\nCritical hit!");
                 }
-                if (b.screen[side ^ 1] & (mv.cls == 0 ? 0x0F : 0xF0))
+                // DS : les écrans ne réduisent pas un coup critique
+                if (!crit && b.screen[tside ^ 1] & (mv.cls == 0 ? 0x0F : 0xF0))
                     d = std::max(1, d / 2);                  // écran adverse
                 if (df.endure && d >= df.hp) d = df.hp - 1;
                 df.hp -= d; if (df.hp < 0) df.hp = 0;
-                if (d > 0) { b.hit_side = side ^ 1; b.hit_t = 0.4f; }
+                if (d > 0) { b.hit_side = tbids[ti]; b.hit_t = 0.4f; }
                 b.lastDmg = d; b.lastEff = eff;
                 if (getenv("BTLDBG"))
                     printf("   [dmg] %d -> dfhp=%d eff=%d\n", d, df.hp, eff);
@@ -756,17 +1045,20 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         }
         // moves de statut : immunité de type (Cage-Éclair vs Sol, etc.)
         if (!mv.power && mv.cls == 2 && mv.effect != 0 &&
+            mv.range != RANGE_USER && mv.range != RANGE_USER_SIDE &&
             type_mul(mv.type, df) == 0) {
             b.msg += tr("\nÇa n'affecte pas ", "\nIt doesn't affect ") +
                 battle_species_name(db, df.species) + "...";
         } else
-            apply_effect(b, db, at, df, mv, dmg, side, sec);
-        if (df.fainted())
+            apply_effect(b, db, at, df, mv, dmg, side, tbids[ti], sec);
+        if (df.fainted()) {
+            anyfaint = 1;
             b.msg += "\n" + battle_species_name(db, df.species) +
-                     (side ? tr(" est K.O. !", " fainted!")
-                           : tr(" ennemi est K.O. !", " fainted!"));
+                     (tside ? tr(" est K.O. !", " fainted!")
+                            : tr(" ennemi est K.O. !", " fainted!"));
+        }
         // KO adverse -> XP + EVs aux participants (DS : au moment du KO)
-        if (df.fainted() && !side) {
+        if (df.fainted() && tside) {
             int np = 0;
             for (int i = 0; i < (int)b.me.size() && i < 8; i++)
                 if ((b.me_part >> i) & 1) np++;
@@ -820,7 +1112,8 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
             }
             b.anim += 0.6f;
         }
-        b.anim = df.fainted() ? (b.anim > 1.2f ? b.anim : 1.6f) : 1.1f;
+        }                                          // fin boucle cibles
+        b.anim = anyfaint ? (b.anim > 1.2f ? b.anim : 1.6f) : 1.1f;
         if (getenv("BTLDBG") && !b.msg.empty())
             printf("   [msg] %s\n", b.msg.c_str());
     };
@@ -831,9 +1124,16 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         break;
     case Battle::INTRO:
         b.anim -= dt;
-        if (b.anim <= 0 || key == 'E') { b.st = Battle::CHOICE; b.sel = 0; b.msg.clear(); }
+        if (b.anim <= 0 || key == 'E') { b.st = Battle::CHOICE; b.sel = 0;
+            b.pick = 0; b.msg.clear(); }
         break;
     case Battle::CHOICE: {                    // 0=Attaque 1=Sac / 2=Pokémon 3=Fuite
+        // doubles : on commande d'abord le slot `pick` puis le suivant
+        BatMon* cur = b.bmon(Battle::bid(0, b.pick));
+        if (!cur || cur->fainted()) {           // slot mort/vide : suivant
+            b.sel_mv[b.pick] = -2;              // hors file
+            next_pick(); break;
+        }
         // layout DS : ATTAQUE large en haut, SAC/POKéMON/FUITE ligne du bas
         if (key == 'W') b.sel = 0;
         else if (key == 'S' && b.sel == 0) b.sel = 2;   // haut -> milieu du bas
@@ -842,52 +1142,81 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
             if (b.sel == 0) b.sel = dd > 0 ? 3 : 1;     // coins du bas
             else { int s = b.sel + dd; b.sel = s < 1 ? 1 : (s > 3 ? 3 : s); }
         }
+        if (key == 'Q' && b.dbl && b.pick == 1) { // annuler -> re-commander P1
+            b.pick = 0; b.sel = 0; b.sel_mv[0] = b.sel_tg[0] = -1; break;
+        }
         if (key != 'E') break;
         if (b.sel == 0) { b.st = Battle::PICKMOVE; b.sel = 0; }
         else if (b.sel == 3) {
             if (b.trainer) { b.msg = tr("Impossible de fuir un combat de Dresseur !",
                 "No! There's no running from a Trainer battle!"); b.anim = 0.9f; b.st = Battle::EXEC; b.qn = b.qi = 0; }
-            else { b.qn = b.qi = 0; b.queue[0][0] = 0; b.queue[0][1] = -1; b.qn = 1; b.st = Battle::EXEC; }
+            else {
+                b.sel_mv[b.pick] = -1;              // fuite : action du slot
+                b.sel_tg[b.pick] = -1;
+                next_pick();
+            }
         } else if (b.sel == 1) {
-            b.st = Battle::BAG; b.sel = 0;      // liste des Balls (main.cpp)
-        } else {                               // Pokémon : envoyer le suivant
-            int nx = -1;
-            for (int i = 0; i < (int)b.me.size(); i++)
-                if (i != b.mi && !b.me[i].fainted()) { nx = i; break; }
+            if (b.dbl && !b.trainer && b.foes_out() > 1) {
+                // DS : impossible de viser avec deux sauvages de front
+                b.msg = tr("Il y a deux Pokémon !\nImpossible de viser !",
+                    "There are two Pokémon!\nCan't aim!"); b.anim = 0.9f;
+                b.st = Battle::EXEC; b.qn = b.qi = 0;
+            } else { b.st = Battle::BAG; b.sel = 0; }  // liste des Balls (main.cpp)
+        } else {                               // Pokémon : switch du slot pick
+            int nx = next_bench(b, 0, b.pick);
             if (nx < 0) { b.msg = tr("Aucun autre Pokémon !", "No other Pokémon!"); b.anim = 0.9f;
                 b.st = Battle::EXEC; b.qn = b.qi = 0; }
             else {
-                you.stg[0]=you.stg[1]=you.stg[2]=you.stg[3]=you.stg[4]=
-                you.stg[5]=you.stg[6]=you.stg[7]=0;   // reset stages au retrait
-                you.conf = 0; you.seeded = false; you.bound = 0;
-                b.mi = nx; b.me_part |= 1 << nx;
-                b.msg = tr("En avant, ", "Go, ") +
-                    battle_species_name(db, b.me[nx].species) + "!";
-                // le switch coûte le tour : l'ennemi attaque
-                int mF = 0; for (int k = 0; k < 4; k++)
-                    if (k < b.foes[b.fi].nmoves && b.foes[b.fi].pp[k] > 0 &&
-                        b.foes[b.fi].moves[k]) { mF = k; }
-                b.qn = 1; b.qi = 0;
-                b.queue[0][0] = 1; b.queue[0][1] = mF;
-                b.st = Battle::EXEC; b.anim = 0.9f;
+                b.sel_mv[b.pick] = -4;            // switch, arg = index équipe
+                b.sel_tg[b.pick] = nx;
+                next_pick();
             }
         }
         break; }
-    case Battle::PICKMOVE:                    // grille 2x2 comme sur DS
+    case Battle::PICKMOVE: {                  // grille 2x2 comme sur DS
+        BatMon* cur = b.bmon(Battle::bid(0, b.pick));
+        bool nopp = true;                              // Lutte si tout PP à 0
+        for (int k = 0; cur && k < cur->nmoves; k++) if (cur->pp[k] > 0) { nopp = false; break; }
+        if (!cur || cur->nmoves == 0) nopp = true;
+        if (nopp) { b.sel_mv[b.pick] = -3; b.sel_tg[b.pick] = -1;
+                    next_pick(); break; }
         if (key == 'W' && b.sel >= 2) b.sel -= 2;
-        else if (key == 'S' && b.sel < 2 && b.sel + 2 < b.you().nmoves)
+        else if (key == 'S' && b.sel < 2 && b.sel + 2 < cur->nmoves)
             b.sel += 2;
         else if (key == 'A' && (b.sel & 1)) b.sel -= 1;
-        else if (key == 'D' && !(b.sel & 1) && b.sel + 1 < b.you().nmoves)
+        else if (key == 'D' && !(b.sel & 1) && b.sel + 1 < cur->nmoves)
             b.sel += 1;
         if (key == 'Q') { b.st = Battle::CHOICE; b.sel = 0; break; }
         if (key == 'E') {
-            if (b.sel < you.nmoves && you.pp[b.sel] > 0) {
-                battle_round(b, db, b.sel);
-                b.st = Battle::EXEC; b.anim = 0.0f; b.qi = 0;
+            if (b.sel < cur->nmoves && cur->pp[b.sel] > 0) {
+                b.sel_mv[b.pick] = b.sel;
+                MoveInfo mi2 = battle_move(db, cur->moves[b.sel]);
+                if (b.dbl && tgt_pickable(mi2.range)) {   // choisir la cible
+                    b.tsel = def_tsel(b, b.pick, mi2.range);
+                    b.st = Battle::PICKTGT; break;
+                }
+                b.sel_tg[b.pick] = ai_target(b, 0, mi2.range);
+                next_pick();
             } else { b.msg = tr("Plus de PP !", "No PP left!"); b.anim = 0.5f; }
         }
-        break;
+        break; }
+    case Battle::PICKTGT: {                   // choix de la cible (doubles)
+        BatMon* cur2 = b.bmon(Battle::bid(0, b.pick));
+        MoveInfo mi2 = battle_move(db, cur2->moves[b.sel_mv[b.pick]]);
+        int t[4], tn = tgt_list(b, 0, mi2.range, t);  // cibles valides
+        if (!tn) { b.st = Battle::PICKMOVE; break; }
+        int ci = 0;
+        for (int i = 0; i < tn; i++) if (t[i] == b.tsel) ci = i;
+        if (key == 'A' || key == 'D' || key == 'W' || key == 'S') {
+            int dd = (key == 'D' || key == 'S') ? 1 : tn - 1;
+            b.tsel = t[(ci + dd) % tn];
+        }
+        if (key == 'Q') { b.st = Battle::PICKMOVE; break; }
+        if (key == 'E') {
+            b.sel_tg[b.pick] = b.tsel;
+            next_pick();
+        }
+        break; }
     case Battle::BAG:                          // le picker Balls vit dans main
         if (key == 'Q') { b.st = Battle::CHOICE; b.sel = 0; }
         break;
@@ -901,12 +1230,13 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
                 else {                          // fini : résultat
                     b.tphase = 2; b.anim = 0.3f;
                     if (b.caught) {
+                        BatMon* w = b.bmon(first_alive_bid(b, 1));
                         b.msg = tr("Youpi ! ", "Gotcha! ") +
-                            battle_species_name(db, foe.species) +
+                            battle_species_name(db, w ? w->species : 0) +
                             tr(" a été capturé !", " was caught!");
                         if (b.caught_box >= 0)
                             b.msg += "\n\n" +
-                                battle_species_name(db, foe.species) +
+                                battle_species_name(db, w ? w->species : 0) +
                                 tr(" a été envoyé à la\nBoîte ",
                                    " was sent to\nBox ") +
                                 std::to_string(b.caught_box + 1) + " !";
@@ -923,13 +1253,10 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         } else {                               // résultat : A pour continuer
             if (b.anim <= 0 && key == 'E') {
                 if (b.caught) { b.st = Battle::WIN; b.won = 1; b.anim = 0.5f; }
-                else {                          // raté : l'ennemi riposte
-                    int mF = 0; for (int k = 0; k < 4; k++)
-                        if (k < b.foe().nmoves && b.foe().pp[k] > 0 &&
-                            b.foe().moves[k]) { mF = k; break; }
-                    b.qn = 1; b.qi = 0;
-                    b.queue[0][0] = 1; b.queue[0][1] = mF;
-                    b.st = Battle::EXEC; b.anim = 0.9f;
+                else {                          // raté : action consommée,
+                    b.sel_mv[b.pick] = -2;          // le tour continue
+                    next_pick();                    // (ennemis attaquent)
+                    b.anim = 0.9f;
                 }
             }
         }
@@ -940,9 +1267,14 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
         if (b.st != Battle::EXEC) break;                  // Roar/Teleport a clos
         // ── résidus de fin de tour (DS : brûlure, poison, toxique,
         //    vampigraine, ligotage, racines) — avant les checks de KO ──
-        for (int s = 0; s < 2; s++) {
-            BatMon& m = s ? foe : you; BatMon& o = s ? you : foe;
-            if (m.fainted()) continue;
+        if (b.eor) goto kocheck;                          // déjà passés (remplacement)
+        b.eor = 1;
+        for (int bd = 0; bd < 4; bd++) {
+            BatMon* mp = b.bmon(bd);
+            if (!mp || mp->fainted()) continue;
+            BatMon& m = *mp;
+            int s = Battle::bid_side(bd);
+            BatMon* op = b.bmon(first_alive_bid(b, s ^ 1));
             std::string mnm = battle_species_name(db, m.species);
             if (m.cond & 0x80) {                          // poison grave n/16
                 int d = std::max(1, m.maxhp * m.toxic_n / 16);
@@ -956,10 +1288,10 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
                 m.hp = std::max(0, m.hp - std::max(1, m.maxhp / 8));
                 b.msg += "\n" + mnm + tr(" souffre de sa brûlure !", " is hurt by its burn!");
             }
-            if (m.seeded && !o.fainted() && m.hp > 0) {   // Vampigraine 1/8
+            if (m.seeded && op && !op->fainted() && m.hp > 0) { // Vampigraine 1/8
                 int d = std::max(1, m.maxhp / 8);
                 m.hp = std::max(0, m.hp - d);
-                o.hp = std::min(o.maxhp, o.hp + d);
+                op->hp = std::min(op->maxhp, op->hp + d);
                 b.msg += "\n" + mnm + tr(" est vampirisé !", "'s health is sapped!");
             }
             if (m.bound && m.hp > 0) {                    // ligotage 1/16
@@ -968,45 +1300,78 @@ void battle_update(Battle& b, Nds* db, float dt, int key) {
             }
             if (m.ingrain)                                // Racines +1/16
                 m.hp = std::min(m.maxhp, m.hp + std::max(1, m.maxhp / 16));
+            // résidus météo : grêle (sauf Glace=15), sable (sauf Sol4/Roche5/Acier8)
+            if (b.weather == BW_HAIL && m.t1 != 15 && m.t2 != 15) {
+                m.hp = std::max(0, m.hp - std::max(1, m.maxhp / 16));
+                b.msg += "\n" + mnm + tr(" subit la grêle !",
+                    " is buffeted by the hail!");
+            }
+            if (b.weather == BW_SAND &&
+                m.t1 != 4 && m.t2 != 4 && m.t1 != 5 && m.t2 != 5 &&
+                m.t1 != 8 && m.t2 != 8) {
+                m.hp = std::max(0, m.hp - std::max(1, m.maxhp / 16));
+                b.msg += "\n" + mnm + tr(" subit la tempête de sable !",
+                    " is buffeted by the sandstorm!");
+            }
             if (m.drowsy && !--m.drowsy && !m.cond && !m.fainted()) {
-                m.cond = 1 + rand() % 3;                  // Bâillement → sommeil
+                m.cond = 2 + rand() % 3;                  // Bâillement → dort 1-3 t (DS)
                 b.msg += "\n" + mnm + tr(" s'endort !", " fell asleep!");
             }
-            // écrans : décrément (nibble bas = phys, haut = spé)
-            int sc = b.screen[s];
-            if (sc & 0x0F) sc = (sc & 0xF0) | ((sc & 0x0F) - 1);
-            if (sc & 0xF0) sc = (sc & 0x0F) | ((sc & 0xF0) - 0x10);
-            b.screen[s] = sc;
+            // écrans : décrément (nibble bas = phys, haut = spé) — par camp
+            if (Battle::bid_slot(bd) == 0) {
+                int sc = b.screen[s];
+                if (sc & 0x0F) sc = (sc & 0xF0) | ((sc & 0x0F) - 1);
+                if (sc & 0xF0) sc = (sc & 0x0F) | ((sc & 0xF0) - 0x10);
+                b.screen[s] = sc;
+            }
         }
-        // fin du round : résolution des K.O.
-        if (foe.fainted()) {
-            int nx = -1;
-            for (int i = b.fi + 1; i < (int)b.foes.size(); i++)
-                if (!b.foes[i].fainted()) { nx = i; break; }
-            if (nx >= 0) {
-                b.fi = nx;
-                b.msg = tr("L'ennemi envoie ", "The foe sent out ") +
-                    battle_species_name(db, b.foes[nx].species) + "!";
-                b.anim = 1.0f; b.qn = b.qi = 0;
-            } else { b.st = Battle::WIN; b.won = 1;
-                b.msg = b.trainer ? tr("Vous avez gagné le combat !", "You won the battle!")
-                                  : tr("Vous avez battu le Pokémon sauvage !", "You defeated the wild Pokémon!");
-                b.anim = 0.5f; }
-            break;
+        // fin du round : résolution des K.O. par slot
+        kocheck:
+        for (int s = 0; s < 2; s++) {                    // slot adverse K.O. ?
+            if (alive_idx(b, 1, s) < 0 &&
+                b.act_idx(1, s) >= 0) {                  // slot occupé mais mort
+                int nx = next_bench(b, 1, s);
+                if (nx >= 0) {
+                    if (s) b.fi2 = nx; else b.fi = nx;
+                    if (getenv("BTLDBG"))
+                        printf("   [swap] E%d <- foes[%d]\n", s + 1, nx);
+                    if (!b.msg.empty()) b.msg += "\n";
+                    b.msg += tr("L'ennemi envoie ", "The foe sent out ") +
+                        battle_species_name(db, b.foes[nx].species) + "!";
+                    b.anim = 1.0f; b.qn = b.qi = 0;
+                }
+            }
         }
-        if (you.fainted()) {
-            int nx = -1;
-            for (int i = 0; i < (int)b.me.size(); i++)
-                if (i != b.mi && !b.me[i].fainted()) { nx = i; break; }
-            if (nx >= 0) { b.mi = nx; b.me_part |= 1 << nx;
-                b.st = Battle::CHOICE; b.sel = 0;
-                b.msg = tr("En avant, ", "Go, ") + battle_species_name(db, b.me[nx].species) + "!";
-                b.anim = 1.0f; b.qn = b.qi = 0;
-            } else { b.st = Battle::LOSE; b.won = -1;
-                b.msg = tr("Tous vos Pokémon sont K.O. !", "All your Pokémon fainted!"); b.anim = 0.5f; }
-            break;
+        if (b.foes_out() == 0) {                          // plus rien en face
+            b.st = Battle::WIN; b.won = 1;
+            b.msg = b.trainer ? tr("Vous avez gagné le combat !", "You won the battle!")
+                              : tr("Vous avez battu le Pokémon sauvage !", "You defeated the wild Pokémon!");
+            b.anim = 0.5f; break;
         }
-        b.st = Battle::CHOICE; b.sel = 0; b.msg.clear();
+        for (int s = 0; s < 2; s++) {                    // slot joueur K.O. ?
+            if (alive_idx(b, 0, s) < 0 && b.act_idx(0, s) >= 0) {
+                int nx = next_bench(b, 0, s);
+                if (nx >= 0) {
+                    if (s) b.mi2 = nx; else b.mi = nx;
+                    b.me_part |= 1 << nx;
+                    if (getenv("BTLDBG"))
+                        printf("   [swap] P%d <- me[%d]\n", s + 1, nx);
+                    if (!b.msg.empty()) b.msg += "\n";
+                    b.msg += tr("En avant, ", "Go, ") +
+                        battle_species_name(db, b.me[nx].species) + "!";
+                    b.anim = 1.0f; b.qn = b.qi = 0;
+                }
+            }
+        }
+        if (b.me_out() == 0) {                           // plus rien chez nous
+            b.st = Battle::LOSE; b.won = -1;
+            b.msg = tr("Tous vos Pokémon sont K.O. !", "All your Pokémon fainted!");
+            b.anim = 0.5f; break;
+        }
+        if (b.anim > 0) break;                            // un remplacement joue
+        b.st = Battle::CHOICE; b.sel = 0; b.pick = 0; b.msg.clear();
+        b.sel_mv[0] = b.sel_mv[1] = -1;
+        b.sel_tg[0] = b.sel_tg[1] = -1;
         break;
     case Battle::WIN: case Battle::LOSE: case Battle::FLEE:
         b.anim -= dt;
@@ -1049,12 +1414,13 @@ void mon_recalc(Nds* db, BatMon& m) {
     uint8_t st[6]; int t1, t2;
     if (!personal(db, m.species, st, &t1, &t2)) return;
     int nat = (int)(m.pid % 25), old = m.maxhp;
-    m.maxhp = stat_hp(st[0], m.level, m.iv, m.evs[0]);
-    m.atk = stat_st(st[1], m.level, m.iv, m.evs[1], nat, 0);
-    m.def = stat_st(st[2], m.level, m.iv, m.evs[2], nat, 1);
-    m.spe = stat_st(st[3], m.level, m.iv, m.evs[3], nat, 2);
-    m.spa = stat_st(st[4], m.level, m.iv, m.evs[4], nat, 3);
-    m.spd = stat_st(st[5], m.level, m.iv, m.evs[5], nat, 4);
+    // DS : 6 IVs indépendants (MON_DATA_IVS, 5 bits/stat)
+    m.maxhp = stat_hp(st[0], m.level, iv_at(m.ivs, 0), m.evs[0]);
+    m.atk = stat_st(st[1], m.level, iv_at(m.ivs, 1), m.evs[1], nat, 0);
+    m.def = stat_st(st[2], m.level, iv_at(m.ivs, 2), m.evs[2], nat, 1);
+    m.spe = stat_st(st[3], m.level, iv_at(m.ivs, 3), m.evs[3], nat, 2);
+    m.spa = stat_st(st[4], m.level, iv_at(m.ivs, 4), m.evs[4], nat, 3);
+    m.spd = stat_st(st[5], m.level, iv_at(m.ivs, 5), m.evs[5], nat, 4);
     m.hp += m.maxhp - old;                             // le gain de PV reste
     if (m.hp > m.maxhp) m.hp = m.maxhp;
     if (m.hp < 0) m.hp = 0;
@@ -1087,7 +1453,7 @@ int mon_learnset_at(Nds* db, int sp, int lv, int out[8]) {
 }
 
 // genre depuis PID vs taux de genre (byte 0x10 ; 0=mâle, 254=femelle, 255=asexué)
-static int mon_gender(Nds* db, const BatMon& m) {      // 0=mâle 1=femelle -1=aucun
+int mon_gender(Nds* db, const BatMon& m) {            // 0=mâle 1=femelle -1=aucun
     auto n = db->narc(P_PERSONAL);
     if (!n || m.species >= n->count()) return -1;
     const Bytes& d = n->member(m.species);

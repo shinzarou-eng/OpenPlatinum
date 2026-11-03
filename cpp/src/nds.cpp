@@ -168,7 +168,7 @@ Nds::Matrix Nds::matrix(int idx) {
     if (!n) return out;
     const Bytes& d = n->member(idx);
     if (d.size() < 6) return out;
-    int h = u8(d, 0), w = u8(d, 1);
+    int w = u8(d, 0), h = u8(d, 1);   // map_matrix.narc : u8 width puis height
     bool has_h = u8(d, 2) != 0, has_a = u8(d, 3) != 0;
     int nl = u8(d, 4);
     size_t o = 5 + nl;

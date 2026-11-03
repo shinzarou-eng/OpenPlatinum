@@ -101,6 +101,11 @@ bool DsAudio::load(const Bytes& sdat) {
         };
         names(0, _seqNames);
         names(2, _bankNames);
+        if (getenv("SNDDUMP"))                     // debug : noms de séquences
+            for (auto& kv : _seqNames)
+                if (strstr(kv.first.c_str(), getenv("SNDDUMP")))
+                    printf("[snddump] %s ply=%d\n", kv.first.c_str(),
+                        _seqs[kv.second].player);
     }
     for (auto& g : _globals) g = -1;
     _ok = true;
@@ -810,7 +815,13 @@ void DsAudio::music(int seq) {
     Player* p = _byPlayer(_bgm_player());
     if (p) _stop(*p, 0);
     _bgm_player_idx = _seqs[seq].player;
+    _playervol[_bgm_player_idx] = _musvol;      // volume de l'option MUSIQUE
     _start(_bgm_player_idx, seq);
+}
+
+void DsAudio::bgm_vol(int v) {                   // option : volume musique live
+    _musvol = v < 0 ? 0 : v > 127 ? 127 : v;
+    _playervol[_bgm_player_idx] = _musvol;
 }
 
 void DsAudio::music_fade(int ticks) {                  // fondu sortant -> stop

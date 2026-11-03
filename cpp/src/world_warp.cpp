@@ -1,5 +1,6 @@
 // world_warp.cpp — transitions de map + animations de props (portes).
 #include "world.h"
+#include "sdat.h"
 #include "world_internal.h"
 #include <cstdio>
 #include <cmath>
@@ -42,9 +43,50 @@ const bmd::JntAnim* World::_bca_anim(int aid) {
     return r.ok ? &r : nullptr;
 }
 
+// archive BTA0 (SRT0 : transform UV des matériaux) — fontaines, roues à eau
+const std::vector<bmd::TexAnim>* World::_bta_anim(int aid) {
+    auto it = _btas.find(aid);
+    if (it != _btas.end()) return it->second.empty() ? nullptr : &it->second;
+    std::vector<bmd::TexAnim> ta;
+    auto n = _db->narc(Nds::P_BMANIME);
+    if (n && aid >= 0 && aid < (int)n->members.size()) {
+        const Bytes& e = n->members[aid];
+        if (e.size() >= 4 && e[0] == 'B' && e[1] == 'T' && e[2] == 'A' && e[3] == '0')
+            ta = bmd::parse_bta0(e);
+    }
+    auto& r = _btas[aid] = std::move(ta);
+    return r.empty() ? nullptr : &r;
+}
+
+// archive BTP0 (PAT0 : swap texture+palette des matériaux) — éoliennes, écrans
+const std::vector<bmd::TexPat>* World::_btp_anim(int aid) {
+    auto it = _btps.find(aid);
+    if (it != _btps.end()) return it->second.empty() ? nullptr : &it->second;
+    std::vector<bmd::TexPat> tp;
+    auto n = _db->narc(Nds::P_BMANIME);
+    if (n && aid >= 0 && aid < (int)n->members.size()) {
+        const Bytes& e = n->members[aid];
+        if (e.size() >= 4 && e[0] == 'B' && e[1] == 'T' && e[2] == 'P' && e[3] == '0')
+            tp = bmd::parse_btp0(e);
+    }
+    auto& r = _btps[aid] = std::move(tp);
+    return r.empty() ? nullptr : &r;
+}
+
 int World::_prop_anim_count(int model) {
     auto ids = _anim_ids(model);
     return ids ? (int)ids->size() : 0;
+}
+
+// map_prop_animation.c : entry ni différée (flags==0) ni pente vélo -> l'anim
+// est attachée au chargement et boucle à l'infini (éoliennes, fontaines…).
+// flags=0x3 = portes/script, 0x2 = attachée plus tard (script), bike = pente.
+int World::_anim_auto(int model) {
+    auto n = _db->narc(Nds::P_BMANILIST);
+    if (!n || model < 0 || model >= (int)n->members.size()) return -1;
+    const Bytes& e = n->members[model];
+    if (e.size() < 8 || e[1] != 0 || e[2] != 0) return -1;
+    return s32(e, 4) >= 0 ? 0 : -1;
 }
 
 // porte dont l'origine tombe dans la hitbox tuiles [tx0..tx1]×[tz0..tz1]
@@ -70,11 +112,21 @@ bool World::_prop_play(int pi, int idx) {
     auto ids = _anim_ids(p.model);
     if (!ids || idx < 0 || idx >= (int)ids->size()) return false;
     auto* an = _bca_anim((*ids)[idx]);
+    if (!an) {
+        // BTP0 (swap texture) : attaché au prop, joué en boucle dans le tick
+        if (auto* tp = _btp_anim((*ids)[idx])) {
+            p.pats = tp; p.panm_frame = 0.f;
+            if (getenv("WARPDBG"))
+                printf("[door] prop %d model %d anim[%d] arc=%d -> BTP0\n",
+                    pi, p.model, idx, (*ids)[idx]);
+            return true;
+        }
+    }
     if (getenv("WARPDBG"))
         printf("[door] prop %d model %d anim[%d] arc=%d -> %s nfr=%d nodes=%zu\n",
             pi, p.model, idx, (*ids)[idx], an ? "BCA0" : "non-BCA0",
             an ? an->nframe : 0, an ? an->nodes.size() : 0);
-    if (!an) {                                   // BTP0 etc. : pas géré -> skip
+    if (!an) {                                   // non géré -> skip
         p.anm = nullptr; p.anm_idx = -1; p.anm_hold = true;
         p.anm_cur.clear();
         return false;
@@ -93,14 +145,89 @@ void World::_prop_anim_stop(PropInst& p) {
     p.anm_cur.clear();
 }
 
+// valeur d'un canal SRT0 à la frame f (clés cyclées, sinon constante)
+static float srt_eval(const bmd::TexAnim::Chan& c, int f) {
+    if (c.key && !c.keys.empty()) return c.keys[f % (int)c.keys.size()];
+    return c.cst;
+}
+
 // avance les anims (30 fps DS) et recalcule les matrices des nœuds animés
 void World::_tick_prop_anims(float dt) {
     for (auto& p : _props) {
+        if (p.tanms) {                      // SRT0 : transform UV par matériau
+            int nfr = 0;
+            for (auto& t : *p.tanms) nfr = std::max(nfr, t.nframe);
+            if (nfr > 0) {
+                p.tanm_frame += dt * 30.f;
+                while (p.tanm_frame >= nfr) p.tanm_frame -= nfr;
+                int f = (int)p.tanm_frame;
+                for (auto& g : p.meshes) {
+                    const bmd::TexAnim* ta = nullptr;
+                    for (auto& t : *p.tanms)
+                        if (t.mat == g.dbg_name) { ta = &t; break; }
+                    if (!ta) continue;
+                    float rt = srt_eval(ta->rot, f);
+                    g.uvtr[0] = srt_eval(ta->tu, f);
+                    g.uvtr[1] = srt_eval(ta->tv, f);
+                    g.uvtr[2] = srt_eval(ta->su, f);
+                    g.uvtr[3] = srt_eval(ta->sv, f);
+                    if (g.uvtr[2] == 0.f) g.uvtr[2] = 1.f;
+                    if (g.uvtr[3] == 0.f) g.uvtr[3] = 1.f;
+                    g.uvrot[0] = cosf(rt); g.uvrot[1] = sinf(rt);
+                    g.uvani = true;
+                }
+            }
+        }
+        if (p.pats) {                     // PAT0 : swap texture par matériau
+            int nfr = 0;
+            for (auto& tp : *p.pats) nfr = std::max(nfr, tp.nframe);
+            if (nfr > 0) {
+                // panm_state : 0 boucle, 1 one-shot->figé (boutons arène),
+                // 2 figé sur la frame courante (état imposé par le script)
+                if (p.panm_state != 2) {
+                    p.panm_frame += dt * 30.f;
+                    if (p.panm_state == 1 &&
+                        (int)p.panm_frame >= nfr - 1) {
+                        p.panm_frame = (float)(nfr - 1);
+                        p.panm_state = 2;
+                    } else {
+                        while (p.panm_frame >= nfr) p.panm_frame -= nfr;
+                    }
+                }
+                int f = (int)p.panm_frame;
+                for (auto& tp : *p.pats)
+                    for (auto& tr : tp.tracks) {
+                        if (tr.keys.empty()) continue;
+                        const bmd::TexPat::Key* k = &tr.keys.back();
+                        for (auto& kk : tr.keys) {   // dernière clé <= f
+                            if (kk.frame <= f) k = &kk; else break;
+                        }
+                        if (k->tex >= tp.texs.size() || k->pal >= tp.pals.size())
+                            continue;
+                        for (auto& g : p.meshes)
+                            if (g.dbg_name == tr.mat) {
+                                uint32_t t = _pat_tex(p.mdl,
+                                    tp.texs[k->tex], tp.pals[k->pal]);
+                                if (t && t != g.tex) {
+                                    if (getenv("WARPDBG"))
+                                        printf("[pat] prop mdl=%d mat=%s f=%d -> %s|%s\n",
+                                            p.model, tr.mat.c_str(), f,
+                                            tp.texs[k->tex].c_str(),
+                                            tp.pals[k->pal].c_str());
+                                    g.tex = t;
+                                }
+                            }
+                    }
+            }
+        }
         if (!p.anm || !p.mdl) continue;
         bool dirty = false;
         if (!p.anm_hold) {
             p.anm_frame += dt * 30.f;            // 30 fps DS (fraction conservée)
-            if ((int)p.anm_frame >= p.anm->nframe - 1) {
+            if (p.anm_loop) {
+                while (p.anm_frame >= p.anm->nframe)
+                    p.anm_frame -= p.anm->nframe;  // boucle infinie (loopCount=-1)
+            } else if ((int)p.anm_frame >= p.anm->nframe - 1) {
                 p.anm_frame = (float)(p.anm->nframe - 1);
                 p.anm_hold = true;
             }
@@ -162,6 +289,7 @@ bool World::_warp_depart(int wi, int type, int adir) {
     if (type == WT_PANEL) {
         // ov5 panneau warp : spin 20 ticks (rotation 90° tous les 2 ticks)
         // + montée h = n(2.2+0.5n) unités ; fondu sortant lancé au tick 20.
+        if (_snd) _snd->se(1499);                // SEQ_SE_PL_WARP
         _wt.py = _ppos.y; _wt.sub = 0;
         _wt.st = WP_DEP_PANEL;
         return true;
@@ -173,7 +301,8 @@ bool World::_warp_depart(int wi, int type, int adir) {
         int ddx, ddz; dirv(_pdir, ddx, ddz);
         _wt.wx = (tx + ddx) * TILE + TILE / 2;
         _wt.wz = (tz + ddz) * TILE + TILE / 2;
-        _wt.wspd = type == WT_DOOR ? 120.f : 60.f;   // escalator = marche lente
+        _wt.wspd = type == WT_DOOR ? 60.f : 30.f;   // escalator = marche lente
+        if (type == WT_ESCAL && _snd) _snd->se(1557);  // SEQ_SE_DP_ESUKA
         _wt.door = -1;
         if (type == WT_DOOR) {
             // ov5_021D433C : hitbox 3x1 sur la rangée de la tuile porte,
@@ -185,13 +314,14 @@ bool World::_warp_depart(int wi, int type, int adir) {
                     bx - 1, bx + 1, bz - 1, bz, _wt.door,
                     _wt.door >= 0 ? _props[_wt.door].model : -1);
             if (_wt.door >= 0 && _prop_play(_wt.door, 0)) {
+                if (_snd) _snd->se(1540);         // SEQ_SE_DP_DOOR (ouverture)
                 _wt.st = WP_DEP_DOOR; _wt.sub = 0;
                 return true;
             }
         }
         _wt.st = WP_DEP_WALK;
     } else {
-        _fade = {0.f, 8.f / 60.f, 0, true};     // fondu sortant (~8 frames DS)
+        _fade = {0.f, 8.f / 30.f, 0, true};     // fondu sortant (~8 frames DS)
         _wt.st = WP_DEP_FADE;
     }
     return true;
@@ -201,7 +331,12 @@ bool World::_warp_depart(int wi, int type, int adir) {
 bool World::_warp_step(float dt) {
     float ddx = _wt.wx - _ppos.x, ddz = _wt.wz - _ppos.z;
     float dl = sqrtf(ddx * ddx + ddz * ddz), st = _wt.wspd * dt;
-    _panim += dt * (_wt.wspd > 80.f ? 16.f : 10.f);
+    static int wdbg = -1;
+    if (wdbg < 0) wdbg = getenv("WSTEPDBG") != nullptr;
+    if (wdbg) printf("[wstep] pos=(%.1f,%.1f) tgt=(%.1f,%.1f) dl=%.2f "
+        "wspd=%.1f dt=%.4f st=%.3f\n", _ppos.x, _ppos.z, _wt.wx, _wt.wz,
+        dl, _wt.wspd, dt, st);
+    _panim += dt * (_wt.wspd > 40.f ? 8.f : 5.f);
     if (_panim > 4.f) _panim -= 4.f;
     if (dl <= st) { _ppos.x = _wt.wx; _ppos.z = _wt.wz; _panim = 0.f; return true; }
     _ppos.x += ddx / dl * st; _ppos.z += ddz / dl * st;
@@ -223,7 +358,10 @@ void World::_warp_fin() {                       // fin de transition
 void World::_tick_warp(float dt) {
     if (_wt.st != WP_LOAD && _wt.st != WP_DEP_PANEL &&
         _wt.st != WP_ARR_PANEL) {               // gravité gelée : posé au sol
-        float gy = _ground_y(_ppos, _ppos.y + 60.f);
+        // DS CalculateObjectHeight : plaque la plus proche du y courant —
+        // un biais vers le haut faisait sauter le joueur sur les plaques
+        // empilées (ponts, hauts d'escalier) pendant les marches de warp.
+        float gy = _ground_y(_ppos, _ppos.y);
         if (gy > -1e8f) { _ppos.y = gy; _vel.y = 0.f; }
     }
     switch (_wt.st) {
@@ -233,7 +371,7 @@ void World::_tick_warp(float dt) {
         if (n % 2 == 0) _pdir = (_pdir + 1) & 3;
         _ppos.y = _wt.py + n * (2.2f + 0.5f * n);
         if (n >= 20) {
-            _fade = {0.f, 6.f / 60.f, 0, true}; // fondu sortant 6 ticks DS
+            _fade = {0.f, 6.f / 30.f, 0, true}; // fondu sortant 6 ticks DS
             _wt.st = WP_DEP_FADE;
         }
         break; }
@@ -243,7 +381,7 @@ void World::_tick_warp(float dt) {
         if (n % 2 == 0) _pdir = (_pdir + 1) & 3;
         _ppos.y = _wt.py + n * (2.2f + 0.5f * n);
         if (n == 2)
-            _fade = {0.f, 6.f / 60.f, 0, false};    // fondu entrant au tick 2
+            _fade = {0.f, 6.f / 30.f, 0, false};    // fondu entrant au tick 2
         if (n <= 0) { _ppos.y = _wt.py; _pdir = 0; _wt.st = WP_ARR; }
         break; }
     case WP_DEP_DOOR:                           // entrée : anim porte DS
@@ -252,7 +390,7 @@ void World::_tick_warp(float dt) {
             if (_prop_anim_done(_props[_wt.door])) _wt.st = WP_DEP_WALK;
         } else {                                // fermeture terminée -> fondu
             if (_prop_anim_done(_props[_wt.door])) {
-                _fade = {0.f, 8.f / 60.f, 0, true};
+                _fade = {0.f, 8.f / 30.f, 0, true};
                 _wt.st = WP_DEP_FADE;
             }
         }
@@ -262,11 +400,12 @@ void World::_tick_warp(float dt) {
             if (_wt.type == WT_DOOR) {
                 _phidden = true;                // passe le chambranle
                 if (_wt.door >= 0 && _prop_play(_wt.door, 1)) {
+                    if (_snd) _snd->se(1542);     // SEQ_SE_DP_DOOR_CLOSE
                     _wt.st = WP_DEP_DOOR; _wt.sub = 1;    // refermer puis fondu
                     break;
                 }
             }
-            _fade = {0.f, 8.f / 60.f, 0, true};
+            _fade = {0.f, 8.f / 30.f, 0, true};
             _wt.st = WP_DEP_FADE;
         }
         break;
@@ -287,7 +426,7 @@ void World::_tick_warp(float dt) {
             _warps[_wt.dw].dwarp == 0x100) {
             _special.hdr = _entrance.hdr; _special.warp = _entrance.warp;
         }
-        _fade = {0.f, 8.f / 60.f, 0, false};    // fondu entrant
+        _fade = {0.f, 8.f / 30.f, 0, false};    // fondu entrant
         if (_wt.type == WT_PANEL) {
             // ov5 : le joueur redescend de h=244 en défaisant la spirale
             _wt.py = _ppos.y; _wt.t = 0.f;
@@ -300,7 +439,7 @@ void World::_tick_warp(float dt) {
             _ppos.x -= ddx * TILE; _ppos.z -= ddz * TILE;
             _wt.wx = _ppos.x + ddx * 2 * TILE;
             _wt.wz = _ppos.z + ddz * 2 * TILE;
-            _wt.wspd = 60.f;
+            _wt.wspd = 30.f;
             _wt.st = WP_ARR_WALK;
         } else if (_wt.type == WT_STAIRS) {
             // sub_02057368 : placé au sommet de l'escalier d'arrivée, face à
@@ -311,7 +450,7 @@ void World::_tick_warp(float dt) {
             else if (cb == TB_STAIRS_W) { _ppos.x -= TILE; _pdir = 3; }
             int ddx, ddz; dirv(_pdir, ddx, ddz);
             _wt.wx = _ppos.x + ddx * TILE; _wt.wz = _ppos.z + ddz * TILE;
-            _wt.wspd = 60.f;
+            _wt.wspd = 30.f;
             _wt.st = WP_ARR_WALK;
         } else {
             // ov5_021D5150 : arrivée face sud = sortir de l'embrasure —
@@ -334,6 +473,7 @@ void World::_tick_warp(float dt) {
                     _prop_anim_count(_props[_wt.door].model) : 0;
                 if (_wt.door >= 0 && n >= 2 &&
                     _prop_play(_wt.door, n >= 4 ? 2 : 0)) {
+                    if (_snd) _snd->se(1540);     // SEQ_SE_DP_DOOR (ouverture)
                     _pdir = 0;                      // sortie toujours face sud
                     _phidden = true;
                     _wt.st = WP_ARR_DOOR; _wt.sub = 0;
@@ -345,7 +485,7 @@ void World::_tick_warp(float dt) {
         if (_wt.sub == 1) {                     // caché sur la tuile -> on sort
             _phidden = false;
             _wt.wx = _ppos.x; _wt.wz = _ppos.z + TILE;
-            _wt.wspd = 120.f;
+            _wt.wspd = 60.f;
             _wt.sub = 2;
         } else if (_wt.sub == 2) {
             if (_warp_step(dt)) _wt.sub = 3;
@@ -360,7 +500,7 @@ void World::_tick_warp(float dt) {
         if (_wt.sub == 0) {                     // ouverture finie -> révéler+pas sud
             if (_prop_anim_done(_props[_wt.door])) {
                 _phidden = false;
-                _wt.wx = _ppos.x; _wt.wz = _ppos.z + TILE; _wt.wspd = 120.f;
+                _wt.wx = _ppos.x; _wt.wz = _ppos.z + TILE; _wt.wspd = 60.f;
                 _wt.sub = 1;
             }
         } else if (_wt.sub == 1) {              // pas sud fini -> fermer
@@ -371,6 +511,7 @@ void World::_tick_warp(float dt) {
                     if (_fade.t < 0) _warp_fin(); else _wt.st = WP_ARR;
                     break;
                 }
+                if (_snd) _snd->se(1542);        // SEQ_SE_DP_DOOR_CLOSE
                 _wt.sub = 2;
             }
         } else {                                // fermeture+fondu finis -> fin
