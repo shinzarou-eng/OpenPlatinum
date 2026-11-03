@@ -92,6 +92,7 @@ public:
     int header() const { return _header; }
     const std::string& label() const { return _label; }
     const std::string& mapname() const { return _mapname; }
+    const std::string& floor_txt() const { return _floor_txt; }
     Vec3 player_pos() const { return _ppos; }
     void set_pos(float x, float z);          // téléport + stream + sol
     void set_y(float y) { _ppos.y = y; }     // debug : force la hauteur
@@ -447,6 +448,7 @@ private:
     Nds* _db = nullptr;
     int _header = -1;
     std::string _label, _mapname;
+    std::string _floor_txt;                              // ShowCurrentFloor (0x11D)
     float _banner_t = 0.f;
     int _mus_day = -1, _mus_night = -1;     // seq SDAT de zone (arm9 MapHeader)
     int _cam_type = -1;                     // type caméra (0..16, 4 = ortho int.)
@@ -763,12 +765,16 @@ private:
     void _warp_fin();                           // fin de transition
     struct WarpEnt { int hdr = -1, warp = -1, x = 0, z = 0, dir = 0; };
     WarpEnt _entrance;                          // entrance FieldOverworldState
-    struct { int hdr = -1, warp = -1; } _special;   // lieu spécial (dwarp 0x100)
+    // lieu spécial (SetSpecialLocation / dwarp 0x100) — DS Location :
+    // hdr,warp + position/direction d'arrivée explicites (x/z/dir = -1
+    // quand mémorisé automatiquement depuis l'entrée).
+    struct { int hdr = -1, warp = -1, x = -1, z = -1, dir = -1; } _special;
     int _blackout_id = 1;                           // spawn_locations.c : index table (défaut = maison)
     struct WarpTask {
         int st = -1;                            // phase en cours (-1 = inactif)
         int type = 0;                           // 0 fondu, 1 porte, 3 escaliers
         int dh = -1, dw = -1, adir = 0;         // destination + dir d'arrivée
+        int dx = -1, dz = -1, ddir = -1;        // arrivée explicite (lieu spécial)
         int sub = 0;                            // sous-phase d'arrivée
         float wx = 0, wz = 0, wspd = 0;         // cible + vitesse marche auto
         float py = 0;                           // sol sous le joueur (panneau)

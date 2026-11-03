@@ -472,9 +472,10 @@ ScriptVM::St ScriptVM::step() {
         case 0x00C9: if (cb_fld) cb_fld(2, _flex((int)_arg[0]), 0); break;  // ForceBicycling -> SetPlayerState
         case 0x011C: {                                  // GetFloorsAbove : table DS field_menu.c
             static const struct { int map, n; } F[] = {
-                {421,1},{423,0},{436,0},{441,1},{444,1},{445,0},{470,1},
-                {471,0},{435,4},{434,3},{433,2},{432,1},{431,0},{430,5},
-                {407,3},{408,2},{409,1},{410,0}};
+                {137,4},{138,3},{139,2},{140,1},{141,0},{566,5},
+                {11,3},{12,2},{13,1},{14,0},
+                {103,1},{104,0},{112,1},{113,0},
+                {164,0},{150,1},{461,1},{462,0}};
             int m = cb_mapid ? cb_mapid() : -1, n = 1;
             for (auto& e : F) if (e.map == m) { n = e.n; break; }
             set_var((int)_arg[0], n); break; }
@@ -637,8 +638,11 @@ ScriptVM::St ScriptVM::step() {
         case 0x011B: {                                      // SetSpecialLocation
             for (int i = 0; i < 5 && i < _narg; i++)
                 special_loc[i] = _flex((int)_arg[i]);       // map,warp,x,z,dir
+            if (cb_fld) cb_fld(11, 0, 0);                   // -> _special
             break; }
-        case 0x011D: break;                               // ShowCurrentFloor
+        case 0x011D:                                      // ShowCurrentFloor x,y,floorVar
+            if (cb_fld) cb_fld(13, 0, var((int)_arg[2]));
+            break;
         case 0x0121: {                                    // GetNationalDexCaughtCount
             // DS : bit « pris » du dex — dex_caught suivi (captures/dons/
             // évolutions/échanges). Repli : mons actuellement détenus.
@@ -677,8 +681,18 @@ ScriptVM::St ScriptVM::step() {
             set_var((int)_arg[0],
                 cb_relearncnt && s >= 0 && s < (int)party.size()
                     ? (cb_relearncnt(s) > 0) : 0); break; }
-        case 0x0221: break;                               // OpenMoveReminderMenu (UI absente)
-        case 0x0223: set_var((int)_arg[0], 0xFF); break;  // CheckLearnedReminderMove -> rien
+        case 0x0221: {                                    // OpenMoveReminderMenu slot
+            tutor_slot = _flex((int)_arg[0]);
+            tutor_moves.clear();
+            if (cb_relearnlist && tutor_slot >= 0 &&
+                tutor_slot < (int)party.size()) {
+                int tmp[32]; int n = cb_relearnlist(tutor_slot, tmp);
+                for (int k = 0; k < n; k++) tutor_moves.push_back(tmp[k]);
+            }
+            tutor_phase = 0; tutor_result = 0xFF;
+            if (!tutor_moves.empty()) _st = MOVEPICK;
+            break; }
+        case 0x0223: set_var((int)_arg[0], tutor_result); break; // CheckLearnedReminderMove
         case 0x023B: break;                               // PlayPokecenterHealingAnimation
         case 0x0248: {                                    // GetPartyMonType d1,d2,slot
             int s = _flex((int)_arg[2]), t1 = 0, t2 = 0;
@@ -887,9 +901,15 @@ ScriptVM::St ScriptVM::step() {
         case 0x01B8: set_var((int)_arg[0],             // GetRandom2 dest,max
             _flex((int)_arg[1]) ? rand() % _flex((int)_arg[1]) : 0); break;
         // ---- trades PNJ / tutors / menus party ----
-        case 0x0191: break;                             // SelectMoveTutorPokemon
-        case 0x0224: break;                             // OpenMoveTutorMenu
-        case 0x0225: set_var((int)_arg[0], 0); break;   // CheckLearnedTutorMove
+        case 0x0191: pick_kind = 0; _st = PARTYPICK; break;  // SelectMoveTutorPokemon
+        case 0x0224: {                                    // OpenMoveTutorMenu slot,move
+            tutor_slot = _flex((int)_arg[0]);
+            tutor_moves = {_flex((int)_arg[1])};
+            tutor_phase = 0; tutor_result = 0xFF;
+            if (tutor_slot >= 0 && tutor_slot < (int)party.size())
+                _st = MOVEPICK;
+            break; }
+        case 0x0225: set_var((int)_arg[0], tutor_result); break; // CheckLearnedTutorMove
         case 0x0226: trade_id = _flex((int)_arg[0]); break;  // InitNpcTrade id
         case 0x0228: {                                  // GetNpcTradeRequestedSpecies
             int req = 0;
@@ -952,6 +972,11 @@ ScriptVM::St ScriptVM::step() {
             if (cb_buf) cb_buf((int)_arg[0], 95, _flex((int)_arg[1])); break;
         case 0x0346:                                      // CapitalizeFirstLetter
             if (cb_buf) cb_buf((int)_arg[0], 96, 0); break;
+        case 0x0347:                                      // BufferFloorNumber buf,floor
+            if (cb_buf) cb_buf((int)_arg[0], 106, _flex((int)_arg[1])); break;
+        case 0x023C:                                      // PlayElevatorAnimation dir,loops
+            if (cb_fld) cb_fld(12, _flex((int)_arg[0]), _flex((int)_arg[1]));
+            break;
         case 0x0272: set_var((int)_arg[0], 0); break;  // OpenShayminTabletNamingScreen (UI nom nd)
         case 0x02EF:                                      // BufferStatName
             if (cb_buf) cb_buf((int)_arg[0], 98, _flex((int)_arg[1])); break;
@@ -961,7 +986,8 @@ ScriptVM::St ScriptVM::step() {
         case 0x0055: break;                             // FadeInBGM
         case 0x00C5: break;                             // PlayHmCutIn
         case 0x0151: break;                             // FieldCommenterBattleRoom
-        case 0x0270: break;                             // SetHiddenLocation
+        case 0x0270: set_flag(5000 + _flex((int)_arg[0]), // SetHiddenLocation
+                              _arg[1] != 0); break;
         case 0x0333: break;                             // SetPlayerVolume
         case 0x0269: break;                             // ShakeObject
         case 0x026D:                                      // MessageUnown (police Unown)

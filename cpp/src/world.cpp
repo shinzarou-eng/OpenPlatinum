@@ -222,9 +222,6 @@ void World::_unload_all() {
     _lamps.clear();                          // halos lampadaires par map
     _nsurf = _nverts = 0;
     _gym = GymDyn();                       // features d'arène : reset par map
-    _gym_vl = false; _gbanim.bag = -1;     // sacs Veilstone : ré-init par 0x174
-    for (auto& b : _gbags) b.obj = -1;
-    for (auto& s : _gstacks) s.obj = -1;
 }
 
 // bascule de zone : recharge les événements/objets/scripts du header
@@ -239,6 +236,10 @@ void World::_set_header(int header_id, bool init) {
         _roamer_step_maps();                        // roamers bougent (DS)
     }
     _header = header_id;
+    _floor_txt.clear();                              // fenêtre étage : par map
+    _gym_vl = false; _gbanim.bag = -1;     // sacs Veilstone : ré-init par 0x174
+    for (auto& b : _gbags) b.obj = -1;
+    for (auto& s : _gstacks) s.obj = -1;
     auto ev = _db->zevents(H->evt);
     _warps = ev.warps;
     if (verbose)
@@ -460,6 +461,12 @@ void World::_set_header(int header_id, bool init) {
                 ? mon_name(_vm.daycare[val]) : "-"; break;
         case 105:                                    // symbole genre mon
             _buf[slot] = val == 0 ? "♂" : val == 1 ? "♀" : "-"; break;
+        case 106: {                                  // BufferFloorNumber : 361
+            auto& b = _bank_msgs(361);               // 0->B1F(76), n->1F+n-1(70+n)
+            int e = val <= 0 ? 76 : 70 + val;
+            _buf[slot] = (e >= 0 && e < (int)b.size())
+                ? _fmt_msg(b[e]) : "?"; break;
+        }
         default:
             if (kind >= 10 && kind <= 72 && BANKS[kind]) {
                 auto& b = _bank_msgs(BANKS[kind]);
@@ -711,6 +718,34 @@ void World::_set_header(int header_id, bool init) {
         for (int m = 1; m < 560; m++) if (learn[m] && !known[m]) n++;
         return n;
     };
+    _vm.cb_relearnlist = [this](int slot, int* out) -> int {  // ordre learnset DS
+        const auto& pm = _vm.party[slot];
+        bool known[560] = {0}, seen[560] = {0};
+        for (int k = 0; k < 4; k++) if (pm.moves[k] > 0) known[pm.moves[k]] = true;
+        int tmp[8], n = 0;
+        for (int lv = 1; lv <= pm.level && n < 22; lv++) {
+            int nm = mon_learnset_at(_db, pm.species, lv, tmp);
+            for (int k = 0; k < nm; k++)
+                if (tmp[k] > 0 && tmp[k] < 560 && !known[tmp[k]] &&
+                    !seen[tmp[k]]) { seen[tmp[k]] = true; out[n++] = tmp[k]; }
+        }
+        return n;
+    };
+    _vm.cb_teachmove = [this](int slot, int mv, int forget) -> bool {
+        if (slot < 0 || slot >= (int)_vm.party.size() ||
+            mv <= 0 || mv >= 560) return false;
+        auto& pm = _vm.party[slot];
+        int i = forget;
+        if (i < 0) {                                        // place libre auto
+            if (pm.nmoves >= 4) return false;
+            i = pm.nmoves;
+        }
+        if (i < 0 || i > 3) return false;
+        pm.moves[i] = mv;
+        pm.pp[i] = battle_move(_db, mv).pp;
+        if (i == pm.nmoves) pm.nmoves++;
+        return true;
+    };
     _vm.cb_swarm = [this](int* map, int* sp) {              // essaim du jour
         _swarm_map_species(map, sp);
     };
@@ -932,6 +967,25 @@ void World::_set_header(int header_id, bool init) {
             _cam_ox = (float)(short)((a >> 16) & 0xFFFF);
             _cam_oz = (float)(short)(a & 0xFFFF);
             _cam_oy = (float)b; return 1;
+        case 11:                                        // SetSpecialLocation
+            _special = {_vm.special_loc[0], _vm.special_loc[1],
+                        _vm.special_loc[2], _vm.special_loc[3],
+                        _vm.special_loc[4]};
+            return 1;
+        case 12:                                        // PlayElevatorAnimation
+            if (_snd) {
+                int s = _snd->seq_named("SEQ_SE_DP_ELEBETA");
+                if (s >= 0) _snd->se(s);
+            }
+            return 1;
+        case 13: {                                      // ShowCurrentFloor : fenêtre "Étage XF"
+            auto& bk = _bank_msgs(361);                 // DS : 15=libellé, 16=nom bufferisé
+            int e = b <= 0 ? 76 : 70 + b;               // même table que kind 106
+            std::string nm = (e >= 0 && e < (int)bk.size())
+                ? _fmt_msg(bk[e]) : "?";
+            std::string lb = (15 < (int)bk.size()) ? _fmt_msg(bk[15]) : "";
+            _floor_txt = lb + "\n" + nm;
+            return 1; }
         }
         return 0;
     };
@@ -2008,7 +2062,8 @@ void World::_gvl_init() {
         Vec3 p{tx * TILE + TILE / 2.f, 0.f, tz * TILE + TILE / 2.f};
         float g0 = _ground_y(p, 40.f);
         p.y = g0 > -1e8f ? g0 : 0.f;
-        _objpos.push_back(p); _objd.push_back(0); _objw.push_back({});
+        _objpos.push_back(p); _objd.push_back(0); _objmv.push_back(0);
+        _objw.push_back({});
         _objw.back().home = p;
         return (int)_objects.size() - 1;
     };
@@ -2018,8 +2073,6 @@ void World::_gvl_init() {
     for (int i = 0; i < 11; i++)
         _gstacks[i] = {GVL_STKS[i][0], GVL_STKS[i][1], true,
                        spawn(GVL_STKS[i][0], GVL_STKS[i][1], 951, 9620 + i)};
-    if (getenv("WARPDBG"))
-        printf("[gvl] sacs+pneus spawnés : objs=%zu\n", _objects.size());
 }
 
 bool World::_gvl_kick(int oi, int dir) {
@@ -2049,9 +2102,6 @@ bool World::_gvl_kick(int oi, int dir) {
     _gbanim.t = 0;
     _gbags[bi].x = x; _gbags[bi].z = z;
     _objects[oj].x = (uint16_t)x; _objects[oj].z = (uint16_t)z;
-    if (getenv("WARPDBG"))
-        printf("[gvl] sac %d poussé dir=%d -> (%d,%d) pneu=%d\n",
-               bi, dir, x, z, stack);
     if (_snd) {
         int s = _snd->seq_named("SEQ_SE_DP_TELE2");
         if (s >= 0) _snd->se(s);
@@ -2621,6 +2671,14 @@ void World::_finish_load(int header_id, int dest_warp) {
         }
     }
     _ppos = spawn; _vel = {0, 0, 0};
+    // lieu spécial (SetSpecialLocation) : position + direction explicites
+    // qui priment sur les coords du warp d'arrivée.
+    if (_wt.dx >= 0) {
+        _ppos.x = _wt.dx * TILE + TILE / 2;
+        _ppos.z = _wt.dz * TILE + TILE / 2;
+        if (_wt.ddir >= 0) _pdir = _wt.ddir;
+        _wt.dx = _wt.dz = _wt.ddir = -1;
+    }
     // DS : le joueur est posé à y=0 puis RecalculateObjectHeight colle la
     // plaque la plus proche de 0 — le spawn à 40 + snap biaisé faisait
     // atterrir sur les plaques hautes empilées (haut d'escalier, pont).

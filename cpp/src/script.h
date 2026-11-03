@@ -14,7 +14,8 @@ class ScriptVM {
 public:
     struct OpDef { uint16_t op; const char* name; const char* widths; };
     enum St { DONE, RUN, MSG, WAITBTN, YESNO, MOVE, WAITTIME, WAITFADE, MENU,
-              STARTER, BATTLE, SHOP, WAITANIM, WAITSND, PCBOX, NICK, PARTYPICK };
+              STARTER, BATTLE, SHOP, WAITANIM, WAITSND, PCBOX, NICK, PARTYPICK,
+              MOVEPICK };
 
     bool load(const Bytes* file);            // membre scr_seq (réf stable)
     bool load_std(const Bytes* file);        // scripts_common (CallStandard)
@@ -173,6 +174,29 @@ public:
     // sélection d'équipe DS (échange 0x2A5 / pension 0x290)
     int pick_kind = 0;                           // 0 = échange, 1 = pension
     void pick_resolve(int slot) { _summary_slot = slot; _st = RUN; }
+
+    // rappel/tuteur de capacités DS (0x221/0x224 -> menu, 0x223/0x225 -> résultat)
+    int tutor_slot = -1;                         // membre d'équipe concerné
+    int tutor_move = 0;                          // capacité choisie à apprendre
+    int tutor_phase = 0;                         // 0 = choix capacité, 1 = choix oubli
+    int tutor_result = 0xFF;                     // 0 appris / 0xFF gardé ou annulé
+    std::vector<int> tutor_moves;                // liste affichée (ordre learnset)
+    std::function<int(int slot, int* out)>      cb_relearnlist;  // moves réapprenables
+    std::function<bool(int slot, int mv, int forget)> cb_teachmove;  // -1 = auto
+    void tutor_resolve(int idx) {
+        if (tutor_phase == 0) {
+            if (idx < 0 || idx >= (int)tutor_moves.size()) {
+                tutor_result = 0xFF; _st = RUN; return; }
+            tutor_move = tutor_moves[idx];
+            // place libre -> apprentissage direct, sinon phase « oublier »
+            if (cb_teachmove && cb_teachmove(tutor_slot, tutor_move, -1)) {
+                tutor_result = 0; _st = RUN; return; }
+            tutor_phase = 1; return;
+        }
+        tutor_result = (idx >= 0 && cb_teachmove &&
+            cb_teachmove(tutor_slot, tutor_move, idx)) ? 0 : 0xFF;
+        _st = RUN;
+    }
 
     // état système DS (sauvegarde à faire plus tard)
     int      badges = 0;                           // bitmask 8 badges

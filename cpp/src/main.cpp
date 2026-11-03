@@ -4437,7 +4437,7 @@ int main(int argc, char** argv) {
                 "gladys", "greta", "inezia", "infirmiere_joy", "iris",
                 "janine", "kimera", "kloe", "kris", "la_lima", "lona",
                 "lucy", "margie", "mashynn", "melina", "menya", "millie",
-                "nephie", "noa", "olim", "pan", "paulie", "rosemary",
+                "nephie", "olim", "pan", "paulie", "rosemary",
                 "roxanne", "sally", "sonya", "strykna", "terry", "tully",
                 "valeriane", "violette", "era"};
             static const char* M[] = {"m", "garcon", "boy", "gold", "nate",
@@ -4450,7 +4450,7 @@ int main(int argc, char** argv) {
                 "colza", "danh", "darach", "euphorbe", "fredo", "gladio",
                 "goyah", "grusha", "hector", "kalem", "kassel", "kiawe",
                 "koga", "kunz", "lem", "lino", "lovis", "lucio", "major_bob",
-                "matis", "mortimer", "nabil", "noland", "norman", "okuba",
+                "matis", "mortimer", "nabil", "noa", "noland", "norman", "okuba",
                 "okuba_larry", "palmer", "pectorius", "pepper", "percy",
                 "peterson", "pierrick", "platane", "prof._sorbier", "roy",
                 "spenser", "tanguy", "tarak", "tcheren", "thorton", "tierno",
@@ -4734,13 +4734,15 @@ int main(int argc, char** argv) {
     }
         for (int i = 1; i + 1 < argc; i++)
             if (!strcmp(argv[i], "--pos")) {
-                double px = 0, pz = 0;
-                if (strchr(argv[i + 1], ',')) {       // --pos x,z
-                    sscanf(argv[i + 1], "%lf,%lf", &px, &pz);
+                double px = 0, pz = 0; int pd = -1;
+                if (strchr(argv[i + 1], ',')) {       // --pos x,z[,d]
+                    int na = sscanf(argv[i + 1], "%lf,%lf,%d", &px, &pz, &pd);
+                    (void)na;
                 } else if (i + 2 < argc) {            // --pos x z
                     px = atof(argv[i + 1]); pz = atof(argv[i + 2]); i++;
                 }
                 world.set_pos((float)px * 16 + 8, (float)pz * 16 + 8);
+                if (pd >= 0) world.set_dir(pd);       // 0=S 1=N 2=O 3=E
             }
 
     bool running = true;
@@ -4773,7 +4775,7 @@ int main(int argc, char** argv) {
     // ── menu X authentique DS ─────────────────────────────────────────────
     enum UISt { UI_NONE, UI_XMENU, UI_BAG, UI_PARTY, UI_SAVE, UI_OPTIONS, UI_CARD,
                 UI_PC, UI_NICK, UI_DEX, UI_PKTC, UI_ENC, UI_TV, UI_KEYS,
-                UI_PICK };
+                UI_PICK, UI_MOVEPICK };
     int ui_st = UI_NONE, menu_sel = 0, save_st = 0, bag_pocket = 0;
     int pk_app = getenv("PKAPP") ? atoi(getenv("PKAPP")) : 0;  // onglet pokétch
     static const struct { int id; const char* fr, * en; } PKAPPS[] = {
@@ -6269,6 +6271,38 @@ int main(int argc, char** argv) {
                     if (bk) {
                         world.vm().pick_resolve(0xFF);
                         ui_st = UI_NONE; world.ui_frozen = false;
+                        if (snd.ok()) snd.se(1500);
+                    }
+                } else if (ui_st == UI_MOVEPICK) {
+                    // rappel/tuteur : liste de capacités — E apprend,
+                    // retour annule. Phase 1 = choix de la capacité à oublier.
+                    auto& vm = world.vm();
+                    int nm = vm.tutor_phase == 0 ? (int)vm.tutor_moves.size()
+                        : (vm.tutor_slot >= 0 &&
+                           vm.tutor_slot < (int)world.party().size()
+                            ? world.party()[vm.tutor_slot].nmoves : 0);
+                    int key = ev.key.key;
+                    bool up = key == SDLK_UP || key == SDLK_W,
+                         dn = key == SDLK_DOWN || key == SDLK_S;
+                    bool ok = key == SDLK_E || key == SDLK_RETURN,
+                         bk = key == SDLK_Q || key == SDLK_BACKSPACE ||
+                              key == SDLK_X || key == SDLK_ESCAPE;
+                    if (up || dn) {
+                        menu_sel = nm ? (menu_sel + (dn ? 1 : nm - 1)) % nm : 0;
+                        if (snd.ok()) snd.se(1500);
+                    }
+                    if (ok && menu_sel < nm) {
+                        vm.tutor_resolve(menu_sel);
+                        if (vm.state() != ScriptVM::MOVEPICK) {
+                            ui_st = UI_NONE; world.ui_frozen = false;
+                        } else menu_sel = 0;      // phase 1 : oublier
+                        if (snd.ok()) snd.se(1501);
+                    }
+                    if (bk) {
+                        vm.tutor_resolve(-1);
+                        if (vm.state() != ScriptVM::MOVEPICK) {
+                            ui_st = UI_NONE; world.ui_frozen = false;
+                        }
                         if (snd.ok()) snd.se(1500);
                     }
                 } else if (ui_st != UI_NONE) {
@@ -10273,6 +10307,18 @@ int main(int argc, char** argv) {
             dt_text(dl, world.label().c_str(), 4 + xo, yy + 16, 3);
             }
         }
+        // ── fenêtre étage (ShowCurrentFloor / ascenseurs) ─────────────
+        // DS : mini-fenêtre 8x4 tuiles en (20,1), libellé + nom bufferisé.
+        if (!world.floor_txt().empty()) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            dt_msgbox(dl, db, 20, 1, 8, 4);
+            std::string ft = world.floor_txt();
+            size_t nl = ft.find('\n');
+            std::string lb = nl == std::string::npos ? "" : ft.substr(0, nl);
+            std::string nm = nl == std::string::npos ? ft : ft.substr(nl + 1);
+            dt_text(dl, lb, 20.5f * 8, 1.5f * 8, 3);
+            dt_text(dl, nm, 24.5f * 8, 3.1f * 8, 3);
+        }
         // upload Image -> texture GL filtrée NEAREST (sûr en drawlist ImGui)
         auto& spr_upload = ui_upload;
         // ── boîte de dialogue (scripts) — masquée pendant un combat ──────
@@ -12540,6 +12586,10 @@ int main(int argc, char** argv) {
         // le choix d'un membre — réutilise l'écran d'équipe en mode pick
         if (world.vm().state() == ScriptVM::PARTYPICK && ui_st == UI_NONE) {
             ui_st = UI_PICK; menu_sel = 0; world.ui_frozen = true;
+        }
+        // rappel/tuteur de capacités : liste de moves à choisir
+        if (world.vm().state() == ScriptVM::MOVEPICK && ui_st == UI_NONE) {
+            ui_st = UI_MOVEPICK; menu_sel = 0; world.ui_frozen = true;
         }
         // ChoosePokeNick : écran de nommage (init = surnom ou espèce)
         if (world.nick_open() && ui_st == UI_NONE) {
@@ -14809,6 +14859,53 @@ int main(int argc, char** argv) {
                 if (clk && mp.x >= dp(0, 128).x && mp.x <= dp(96, 144).x &&
                     mp.y >= dp(0, 128).y && mp.y <= dp(96, 144).y)
                     push_key(SDLK_Q);
+            } else if (ui_st == UI_MOVEPICK) {
+                // ── rappel/tuteur de capacités : fenêtre liste DS ──
+                auto& vm = world.vm();
+                ImDrawList* dl = ImGui::GetForegroundDrawList();
+                ImVec2 mp = ImGui::GetIO().MousePos;
+                bool clk = ImGui::IsMouseClicked(0);
+                int nlist = vm.tutor_phase == 0
+                    ? (int)vm.tutor_moves.size()
+                    : (vm.tutor_slot >= 0 &&
+                       vm.tutor_slot < (int)world.party().size()
+                        ? world.party()[vm.tutor_slot].nmoves : 0);
+                static const int vis = 6;
+                int mv_scroll = (nlist > vis && menu_sel >= vis)
+                    ? menu_sel - vis + 1 : 0;
+                dl->AddRectFilled(dp(0, 0), dp(256, 192),
+                    IM_COL32(4, 8, 18, 120));
+                ImVec2 w0 = dp(34, 30), w1 = dp(222, 30 + 26 + vis * 22 + 8);
+                ds_window(dl, db, 0, 6.f * g_uds, w0, w1);
+                ds_font_ready(db);
+                const char* ttl = vm.tutor_phase == 0
+                    ? "Quelle capacité ?" : "Oublier quelle capacité ?";
+                if (vm.tutor_slot >= 0 &&
+                    vm.tutor_slot < (int)world.party().size()) {
+                    auto& pm = world.party()[vm.tutor_slot];
+                    std::string hd = world.mon_name(pm) + "  N." +
+                        std::to_string(pm.level) + " — " + ttl;
+                    dt_text(dl, hd, 42, 36, 7);
+                }
+                for (int k = 0; k < vis && k + mv_scroll < nlist; k++) {
+                    int i = k + mv_scroll;
+                    int mv = vm.tutor_phase == 0 ? vm.tutor_moves[i]
+                        : world.party()[vm.tutor_slot].moves[i];
+                    ImVec2 rp = dp(40, 60 + k * 22), rq = dp(216, 60 + k * 22 + 20);
+                    if (i == menu_sel)
+                        dl->AddRectFilled(rp, rq, IM_COL32(70, 120, 200, 90), 4.f);
+                    dt_text(dl, battle_move_name(&db, mv),
+                        48, 62 + k * 22, i == menu_sel ? 1 : 7);
+                    if (clk && mp.x >= rp.x && mp.x <= rq.x &&
+                        mp.y >= rp.y && mp.y <= rq.y) {
+                        menu_sel = i;
+                        vm.tutor_resolve(i);
+                        if (vm.state() != ScriptVM::MOVEPICK) {
+                            ui_st = UI_NONE; world.ui_frozen = false;
+                        } else menu_sel = 0;
+                        if (snd.ok()) snd.se(1501);
+                    }
+                }
             } else if (ui_st == UI_PARTY || ui_st == UI_PICK) {
                 // ── équipe : vrai écran pl_plist_gra (menu.NSCR) ──
                 // icônes espèces aux positions DS + texte NFGR aux fenêtres DS

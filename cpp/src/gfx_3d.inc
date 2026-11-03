@@ -11,6 +11,6 @@ static const struct { int16_t gfx, member; } GFX_3D[] = {
     {209, 110},
     {262, 149},
     {950, 113},  // VEILSTONE_GYM : sac de frappe (veilstone_gym_sandbag)
-    {951, 114},  // VEILSTONE_GYM : pile de pneus (veilstone_gym_tire_stack)
+    {951, 112},  // VEILSTONE_GYM : pneus (tire_stack_toppled, 4 meshes)
 };
-static const int GFX_3D_N = 11;
+static const int GFX_3D_N = (int)(sizeof(GFX_3D) / sizeof(GFX_3D[0]));

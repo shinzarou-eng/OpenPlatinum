@@ -10,7 +10,7 @@
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white">
   <img alt="SDL3" src="https://img.shields.io/badge/SDL-3-1D4F91">
   <img alt="OpenGL" src="https://img.shields.io/badge/OpenGL-3.3-5586A4?logo=opengl&logoColor=white">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%C2%B7%20macOS-0078D6">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
   <img alt="Status" src="https://img.shields.io/badge/status-early%20development-orange">
   <a href="https://github.com/shinzarou-eng/OpenPlatinum/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/shinzarou-eng/OpenPlatinum?label=windows%20build"></a>
@@ -31,6 +31,16 @@
 
 <sub>Captured from the engine. Every map, NPC, line of dialogue, 3D model and cutscene above is
 driven by the game's own data, loaded at runtime from the ROM. None of it was hand-placed.</sub>
+
+| Day / night cycle | Weather (snow) |
+|---|---|
+| ![day](screenshots/jour_bonaugure.png) | ![night](screenshots/nuit_bonaugure.png) |
+| **Professor intro** | **Location popup** |
+| ![intro](screenshots/intro_help.png) | ![popup](screenshots/dialogue_pnj.png) |
+| **Battle (DS layout)** | **Surf** |
+| ![battle](screenshots/combat_dresseur.png) | ![surf](screenshots/eau_t1.png) |
+| **Pokémon Center PC** | **Pokémon Center** |
+| ![pc](screenshots/pc_ui.png) | ![center](screenshots/monde_pokecenter.png) |
 
 ---
 
@@ -82,10 +92,17 @@ SBNK/SWAR instruments) plays map music, battle themes, effects and cries.
 | Blackout / respawn | ✅ Done | `sSpawnLocations` table: last visited Pokémon Center remembered, healed on wake, fade + warp |
 | In-game options | ✅ Done | DS rows (text speed, battle anim/style, sound, buttons, frame type) + native graphics: language (FR/EN), fullscreen, resolution, texture filter, antialiasing (MSAA), anisotropy, VSync. Saved to `options.cfg` |
 | Save data | ✅ Done | Save v8: map, position, party, PC boxes (18×30, empty slots preserved), flags, respawn |
-| Wild encounters | 🟡 Partial | Real tables and rates — grass and Surf sections of `pl_enc_data` |
-| Battles | 🟡 Partial | Real DS two-screen layout (scene + touch panel, side-by-side on wide windows), `pl_batt_bg`/`pl_batt_obj` per map, DS anchors for platforms, HP boxes and message, touch buttons decoded from ROM graphics, trainer sprites (`trfgra`/`trbgra`), wild and trainer battles, XP/level-up, Gen-4 capture including send-to-box when the party is full. No doubles yet |
+| Wild encounters | ✅ Done | Real tables and rates — grass incl. swarm/day/night/radar/dual-slot sections, Surf and fishing (`pl_enc_data`) |
+| Battles | 🟡 Partial | Real DS two-screen layout (scene + touch panel, side-by-side on wide windows), `pl_batt_bg`/`pl_batt_obj` per map, DS anchors for platforms, HP boxes and message, touch buttons decoded from ROM graphics, trainer sprites (`trfgra`/`trbgra`), HD painted backgrounds per terrain with day/night sky, wild and trainer battles, **2v2 doubles** (4-battler engine, native double trainers), XP/level-up, Gen-4 capture including send-to-box when the party is full. No tag partners / trainer AI scoring yet |
 | Pokémon storage (PC) | ✅ Done | Real in-world PC: tile-behavior script → boot dialogue → owner menu → operations (deposit/withdraw/move/items), then the storage app; sparse 18×30 boxes, party restrictions kept |
 | Field moves | 🟡 Partial | Surf end-to-end: badge + party gating, mount/dismount, swim sprite, water encounters |
+| Weather | ✅ Done | Per-map overlays (rain, heavy rain, thunderstorm, snow, hail, sandstorm, fog, diamond dust), dynamic fronts + seasons (`--weather dyn`), ROM ambient audio loops, weather carried into battle |
+| Day / night | ✅ Done | Hour-driven tint (day/dusk/night palettes), lit windows and lamps, period-gated encounter tables, `--time HH` |
+| Walking Pokémon | 🟡 Partial | Follower walks behind the player with DS step animation (HGSS-style sprites available) |
+| Dynamic map features | 🟡 Partial | `gym_features` wired: Canalave water platforms, Veilstone punching bags + tire stacks, Sunyshore gears, Eterna fans, Iron Island/League lifts, Hearthome DP lift, Villa init |
+| Distortion World | 🟡 Partial | DW maps, camera, jumps, Giratina shadow event |
+| Player skins | ✅ Done | Selectable overworld + battle-back skins (`--skin`), 40+ characters |
+| Pokétch | 🟡 Partial | `--poketch` |
 | X menu / Bag / Party / Save | 🟡 Partial | Functional screens, item bag pockets, on-going polish |
 | Field texture loops (`fldtanime`) | ✅ Done | Per-area BTX0 loops: water, flowers, machines |
 | Audio (SDAT) | ✅ Done | SSEQ sequencer + SBNK/SWAR instruments: map BGM, battle themes, sound effects, cries, fanfares |
@@ -252,15 +269,23 @@ plus debug environment variables (`SCRTRACE`, `WARPDBG`, `WARPAUDIT`, `OBJDBG`, 
 - [x] SDAT audio: SSEQ/SBNK/SWAR sequencer, field BGM, battle themes, cries
 - [x] Pokémon storage: real in-world PC, sparse boxes, capture-to-box
 - [x] Battle presentation: DS two-screen layout, trainer sprites, touch buttons
-- [ ] Professor intro and new-game flow
+- [x] Professor intro and new-game flow
+- [x] Weather: per-map overlays, dynamic fronts + seasons, ambient loops, battle carry-over
+- [x] Day/night cycle: hourly tint, lit windows, time-gated encounters
+- [x] Double battles: 4-battler engine, native double trainers, animated target cursor
+- [x] Walking Pokémon follower
+- [x] Gym dynamic features: Canalave, Veilstone, Sunyshore, Eterna, lifts
+- [x] Player skins (`--skin`)
+- [x] macOS build (arm64, CI artifact)
 - [ ] Sandgem progression and beyond
 - [ ] Eggs and nicknames (`GiveEgg`, `ChoosePokeNick`)
 - [ ] Remaining field moves: Cut, Rock Smash, Strength, Waterfall, Rock Climb, Fly + town map
-- [ ] Double / tag battles
+- [ ] Tag battles + trainer AI scoring
 - [ ] Hall of Fame and credits
-- [ ] Battle engine: items, trainer AI, doubles
+- [ ] Battle engine: items
 - [ ] Pokédex, key items, trading
-- [ ] Linux / macOS builds
+- [ ] Linux build, Intel macOS
+- [ ] Distortion World: full event chain
 
 ## FAQ
 

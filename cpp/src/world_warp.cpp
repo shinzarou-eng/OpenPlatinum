@@ -280,7 +280,10 @@ bool World::_warp_depart(int wi, int type, int adir) {
             return false;
         }
         _wt.dh = _special.hdr; _wt.dw = _special.warp;
-    } else { _wt.dh = w.dest; _wt.dw = w.dwarp; }
+        // SetSpecialLocation : position + direction d'arrivée explicites
+        _wt.dx = _special.x; _wt.dz = _special.z; _wt.ddir = _special.dir;
+    } else { _wt.dh = w.dest; _wt.dw = w.dwarp;
+             _wt.dx = _wt.dz = _wt.ddir = -1; }
     _wt.type = type; _wt.adir = adir; _wt.sub = 0; _wt.door = -1; _wt.t = 0;
     _pstep = 0; _panim = 0.f;
     if (getenv("WARPDBG"))
@@ -425,6 +428,7 @@ void World::_tick_warp(float dt) {
         if (_wt.dw >= 0 && _wt.dw < (int)_warps.size() &&
             _warps[_wt.dw].dwarp == 0x100) {
             _special.hdr = _entrance.hdr; _special.warp = _entrance.warp;
+            _special.x = _special.z = _special.dir = -1;
         }
         _fade = {0.f, 8.f / 30.f, 0, false};    // fondu entrant
         if (_wt.type == WT_PANEL) {
