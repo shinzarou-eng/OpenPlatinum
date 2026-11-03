@@ -8,6 +8,14 @@
 #include <unordered_map>
 #include <algorithm>
 
+// shim POSIX : signature Microsoft localtime_s(tm*, const time_t*) -> localtime_r
+#ifndef _WIN32
+#include <ctime>
+inline int localtime_s(struct tm* out, const time_t* t) {
+    return localtime_r(t, out) ? 0 : -1;
+}
+#endif
+
 using Bytes = std::vector<uint8_t>;
 struct BytesView { const uint8_t* p = nullptr; size_t n = 0; };
 
