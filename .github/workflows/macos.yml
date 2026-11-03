@@ -10,7 +10,12 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13   # arm64 (Apple Silicon)
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest, arch: arm64 }
+          - { os: macos-13, arch: x86_64 }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,5 +33,5 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: OpenPlatinum-macos-arm64
+          name: OpenPlatinum-macos-${{ matrix.arch }}
           path: cpp/builddir/OpenPlatinum
