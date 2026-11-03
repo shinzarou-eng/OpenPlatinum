@@ -4157,37 +4157,46 @@ int main(int argc, char** argv) {
             0
         };
         const char* fonts[] = {"C:/Windows/Fonts/segoeui.ttf",
-            "C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/tahoma.ttf"};
+            "C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/tahoma.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Geneva.ttf"};
         // typo de jeu : ronde et soutenue (lisible à toutes les échelles)
         const char* gfonts[] = {"C:/Windows/Fonts/candarab.ttf",
             "C:/Windows/Fonts/corbelb.ttf", "C:/Windows/Fonts/seguisb.ttf",
-            "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf"};
+            "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Avenir Next.ttc",
+            "/System/Library/Fonts/Supplemental/Arial.ttf"};
+        // AddFontFromFileTTF asserte si le fichier manque -> on teste d'abord
+        auto load_font = [&](const char* p, float sz,
+                             ImFontConfig* cfg = nullptr) -> ImFont* {
+            if (!fs::exists(p)) return nullptr;
+            return io.Fonts->AddFontFromFileTTF(p, sz, cfg, ranges);
+        };
         ImFont* f = nullptr;
         for (auto p : fonts) {
-            f = io.Fonts->AddFontFromFileTTF(p, 19.f, nullptr, ranges);
+            f = load_font(p, 19.f);
             if (f) break;
         }
         if (!f) io.Fonts->AddFontDefault();
         // 2e instance grande taille : texte de jeu en thème
         for (auto p : gfonts)
-            if (io.Fonts->AddFontFromFileTTF(p, 64.f, nullptr, ranges)) break;
+            if (load_font(p, 64.f)) break;
         // POP : Dela Gothic One (titres) + Rubik (corps), repli silencieux
         ImFontConfig pcfg; pcfg.OversampleH = 2; pcfg.OversampleV = 2;
-        g_pop_fti = io.Fonts->AddFontFromFileTTF(
+        g_pop_fti = load_font(
             up_path("ui/fonts/DelaGothicOne-Regular.ttf").c_str(),
-            96.f, &pcfg, ranges);
-        g_pop_fti2 = io.Fonts->AddFontFromFileTTF(
+            96.f, &pcfg);
+        g_pop_fti2 = load_font(
             up_path("ui/fonts/DelaGothicOne-Regular.ttf").c_str(),
-            160.f, &pcfg, ranges);
-        g_pop_fbk = io.Fonts->AddFontFromFileTTF(
-            up_path("ui/fonts/Rubik-Black.ttf").c_str(),
-            64.f, nullptr, ranges);
-        g_pop_fb = io.Fonts->AddFontFromFileTTF(
-            up_path("ui/fonts/Rubik-Bold.ttf").c_str(),
-            64.f, nullptr, ranges);
-        g_pop_fm = io.Fonts->AddFontFromFileTTF(
-            up_path("ui/fonts/Rubik-Medium.ttf").c_str(),
-            48.f, nullptr, ranges);
+            160.f, &pcfg);
+        g_pop_fbk = load_font(
+            up_path("ui/fonts/Rubik-Black.ttf").c_str(), 64.f);
+        g_pop_fb = load_font(
+            up_path("ui/fonts/Rubik-Bold.ttf").c_str(), 64.f);
+        g_pop_fm = load_font(
+            up_path("ui/fonts/Rubik-Medium.ttf").c_str(), 48.f);
     }
     ImGui_ImplSDL3_InitForOpenGL(win, ctx);
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -4268,6 +4277,7 @@ int main(int argc, char** argv) {
     int ihelp = 0, igender = 0, iyn_sel = 0;
     int iskin = 0, iskin_top = 0;           // choix d'apparence : curseur/scroll
     int iskin_edit = 0;                     // 0 grille, 1 édit. couleur, 2 créateur
+    int iskin_back = 0;                     // 1 = aperçu dos de combat dans le panneau
     int ipgfx = 0;                          // gfx du héros/héroïne pour l'aperçu
     // ── créateur de perso (trainerkit) ──────────────────────────────
     TrainerKit ikit; bool ikit_init = false;
@@ -4499,6 +4509,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < (int)iskin_list.size(); i++)
             if (iskin_list[i] == world.skin) { iskin = i; break; }
         iskin_top = 0; iskin_zone = 0; iskin_pal = 0; iskin_edit = 0;
+        iskin_back = 0;
     };
     // ── créateur modulaire (trainerkit) ────────────────────────────
     auto ik_gender_ok = [&](int c, const std::string& nm) {
@@ -4732,7 +4743,7 @@ int main(int argc, char** argv) {
         }
         if (getenv("SHOPTEST")) world.force_shop();   // test écran boutique
     }
-        for (int i = 1; i + 1 < argc; i++)
+        for (int i = 1; i + 1 < argc; i++) {
             if (!strcmp(argv[i], "--pos")) {
                 double px = 0, pz = 0; int pd = -1;
                 if (strchr(argv[i + 1], ',')) {       // --pos x,z[,d]
@@ -4744,6 +4755,9 @@ int main(int argc, char** argv) {
                 world.set_pos((float)px * 16 + 8, (float)pz * 16 + 8);
                 if (pd >= 0) world.set_dir(pd);       // 0=S 1=N 2=O 3=E
             }
+            if (!strcmp(argv[i], "--spec"))            // lieu spécial DS
+                world.set_special(atoi(argv[i + 1]));
+        }
 
     bool running = true;
     int shot_at = arg_shot(argc, argv), frames = 0;
@@ -5228,6 +5242,7 @@ int main(int argc, char** argv) {
                                 strcpy(iname, ""); iset_msg(24); ichars = 0;
                             }
                             else if (cd == 4004) { iskin_edit = 0; iskin_zone = 0; }
+                            else if (cd == 4020) iskin_back ^= 1;   // DOS COMBAT
                             else if (cd == 4010) ik_enter();   // CRÉER
                             else if (cd == 4011) {      // RETOUR -> genre
                                 world.skin = -1; ist = I_GENDER;
@@ -7830,12 +7845,20 @@ int main(int argc, char** argv) {
                     pop_halftone(bg, {p0.x+10.f*u, p0.y+10.f*u},
                         {p1.x-10.f*u, p1.y-10.f*u}, 26.f*u, 2.4f*u,
                         IM_COL32(20,20,20,22));
-                    // chips : genre + dos combat
+                    // chips : genre + dos combat (cliquable -> aperçu du dos)
                     pop_tchip(bg, {p0.x + 96.f*u, p0.y + 34.f*u},
                         igender ? tr("FILLE","GIRL") : tr("GARÇON","BOY"),
                         POP_TEAL, u);
-                    pop_tchip(bg, {p1.x - 128.f*u, p0.y + 34.f*u},
-                        tr("DOS COMBAT","BATTLE BACK"), POP_LIL, u);
+                    {
+                        ImVec2 dc{p1.x - 128.f*u, p0.y + 34.f*u};
+                        ImVec2 d0{dc.x - 92.f*u, dc.y - 24.f*u},
+                               d1{dc.x + 92.f*u, dc.y + 24.f*u};
+                        pop_tchip(bg, dc,
+                            tr("DOS COMBAT","BATTLE BACK"),
+                            iskin_back ? POP_GOLD : (hov_r(d0,d1) ? POP_RED : POP_LIL),
+                            u);
+                        iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4020});
+                    }
                     // podium : ellipse papier + contour encre + ombre
                     ImVec2 pc{p0.x + (p1.x-p0.x)*0.5f, p1.y - 120.f*u};
                     bg->AddEllipseFilled({pc.x + 8.f*u, pc.y + 8.f*u},
@@ -7846,12 +7869,26 @@ int main(int argc, char** argv) {
                     float pt = (float)ImGui::GetTime();
                     int wf = WC[(int)(pt * 5.f) & 3];
                     float bob = -fabsf(sinf(pt * 8.f)) * 8.f*u;
-                    uint32_t t = world.sprite_frame_t(
-                        sel_g < 0 ? ipgfx : sel_g, wf, world.skin_hue,
-                        world.skin_sat, world.skin_val, world.skin_mask);
-                    if (t)
-                        pop_sprite(bg, t,
-                            {pc.x, pc.y - 190.f*u + bob}, 300.f*u, 360.f*u, u);
+                    if (iskin_back) {
+                        // aperçu du dos de combat 80x80 sur le podium
+                        uint32_t tb = sel_g >= World::SKIN_BASE
+                            ? world.skin_back_tex(sel_g - World::SKIN_BASE)
+                            : world.trainer_back_tex(igender);
+                        if (tb)
+                            pop_sprite(bg, tb,
+                                {pc.x, pc.y - 170.f*u}, 300.f*u, 300.f*u, u);
+                        else
+                            pop_slabrib(bg, {pc.x, pc.y - 170.f*u},
+                                tr("PAS DE DOS","NO BACK"),
+                                pop_fbk(), 26.f*u, POP_PAP, POP_RED, -2.f, u);
+                    } else {
+                        uint32_t t = world.sprite_frame_t(
+                            sel_g < 0 ? ipgfx : sel_g, wf, world.skin_hue,
+                            world.skin_sat, world.skin_val, world.skin_mask);
+                        if (t)
+                            pop_sprite(bg, t,
+                                {pc.x, pc.y - 190.f*u + bob}, 300.f*u, 360.f*u, u);
+                    }
                     // flèches ‹ › en stickers sur les bords
                     auto arw = [&](float ax, bool left, int code) {
                         ImVec2 a0{ax, pc.y - 210.f*u},
@@ -8095,8 +8132,16 @@ int main(int argc, char** argv) {
                 }
                 tag(350, 42, igender ? tr("FILLE","GIRL") : tr("GARÇON","BOY"),
                     ui_acc());
-                tag(350, 66, tr("DOS COMBAT","BATTLE BACK"),
-                    IM_COL32(74, 200, 138, 255));
+                {   // tag « DOS COMBAT » cliquable -> bascule l'aperçu du dos
+                    const char* dlb = tr("DOS COMBAT","BATTLE BACK");
+                    float dw = tw(dlb, 9.f) + 22.f;
+                    ImVec2 d0 = mp(350 - dw, 66), d1 = mp(350, 66 + 17);
+                    tag(350, 66, dlb,
+                        iskin_back ? IM_COL32(240, 180, 40, 255)
+                            : (hov_r(d0, d1) ? IM_COL32(230, 80, 90, 255)
+                                : IM_COL32(74, 200, 138, 255)));
+                    iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4020});
+                }
                 {   // halo de podium : 3 ellipses concentriques dégradées
                     float pt = (float)ImGui::GetTime();
                     ImVec2 pc = mp(199, 351);
@@ -8110,12 +8155,27 @@ int main(int argc, char** argv) {
                     static const int WC[4] = {4, 5, 4, 6};
                     int wf = WC[(int)(pt * 5.f) & 3];
                     float bob = -fabsf(sinf(pt * 8.f)) * 5.f;
-                    uint32_t t = world.sprite_frame_t(
-                        sel_g < 0 ? ipgfx : sel_g, wf, world.skin_hue,
-                        world.skin_sat, world.skin_val, world.skin_mask);
-                    if (t)
-                        bg->AddImage((ImTextureID)(uintptr_t)t,
-                            mp(109, 110 + bob), mp(289, 290 + bob));
+                    if (iskin_back) {
+                        // aperçu du dos de combat 80x80 dans la scène
+                        uint32_t tb = sel_g >= World::SKIN_BASE
+                            ? world.skin_back_tex(sel_g - World::SKIN_BASE)
+                            : world.trainer_back_tex(igender);
+                        if (tb)
+                            bg->AddImage((ImTextureID)(uintptr_t)tb,
+                                mp(94, 90), mp(304, 300));
+                        else {
+                            ImVec2 T = mp(199 - tw("pas de dos", 11.f)*0.5f, 190);
+                            ds_text(bg, tr("pas de dos","no back"),
+                                T.x, T.y, 6, fs(11.f));
+                        }
+                    } else {
+                        uint32_t t = world.sprite_frame_t(
+                            sel_g < 0 ? ipgfx : sel_g, wf, world.skin_hue,
+                            world.skin_sat, world.skin_val, world.skin_mask);
+                        if (t)
+                            bg->AddImage((ImTextureID)(uintptr_t)t,
+                                mp(109, 110 + bob), mp(289, 290 + bob));
+                    }
                 }
                 {   // plaque nominative : nom + sous-titre 2 lignes
                     bg->AddLine(mp(52, 396), mp(346, 396),
