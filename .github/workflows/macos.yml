@@ -30,8 +30,29 @@ jobs:
         working-directory: cpp
         run: ninja -C builddir
 
-      - name: Upload binary
+      - name: Package (bundle SDL3 + resources)
+        working-directory: cpp
+        run: |
+          set -e
+          NAME=OpenPlatinum-macos-${{ matrix.arch }}
+          OUT=dist/$NAME
+          mkdir -p "$OUT/bin" "$OUT/data" "$OUT/ui/fonts" "$OUT/rom" "$OUT/battlebg"
+          cp builddir/OpenPlatinum "$OUT/bin/"
+          cp ui/fonts/* "$OUT/ui/fonts/" 2>/dev/null || true
+          cp ui/pop_title.jpg "$OUT/ui/" 2>/dev/null || true
+          cp logo_op.png "$OUT/" 2>/dev/null || true
+          cp battlebg/*.png "$OUT/battlebg/" 2>/dev/null || true
+          # SDL3 dynamique embarquee + repointage vers @executable_path
+          SDL3_REF=$(otool -L "$OUT/bin/OpenPlatinum" | awk '/libSDL3/{print $1; exit}')
+          cp "$(brew --prefix sdl3)/lib/libSDL3.0.dylib" "$OUT/bin/"
+          chmod +w "$OUT/bin/libSDL3.0.dylib"
+          install_name_tool -id @executable_path/libSDL3.0.dylib "$OUT/bin/libSDL3.0.dylib"
+          [ -n "$SDL3_REF" ] && install_name_tool -change "$SDL3_REF" @executable_path/libSDL3.0.dylib "$OUT/bin/OpenPlatinum"
+          printf 'Placez votre dump Pokémon Platine (.nds) ici.\nDrop your own Pokémon Platinum .nds dump here.\n' > "$OUT/rom/LISEZ-MOI.txt"
+          cd dist && zip -qr "$NAME.zip" "$NAME"
+
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: OpenPlatinum-macos-${{ matrix.arch }}
-          path: cpp/builddir/OpenPlatinum
+          path: cpp/dist/*.zip
