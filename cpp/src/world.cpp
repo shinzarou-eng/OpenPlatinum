@@ -236,7 +236,7 @@ void World::_set_header(int header_id, bool init) {
         _roamer_step_maps();                        // roamers bougent (DS)
     }
     _header = header_id;
-    _floor_txt.clear();                              // fenêtre étage : par map
+    _floor_txt.clear(); _floor_var = -1;             // fenêtre étage : par map
     _gym_vl = false; _gbanim.bag = -1;     // sacs Veilstone : ré-init par 0x174
     for (auto& b : _gbags) b.obj = -1;
     for (auto& s : _gstacks) s.obj = -1;
@@ -304,6 +304,7 @@ void World::_set_header(int header_id, bool init) {
     _lockall = 0; _coord_in = -1; _talk_obj = -1; _spk_obj = -1; _dlg_spk = -1;
     _pstep = 0; _ptx = _ppos.x; _ptz = _ppos.z;         // pas en cours -> annulé
     _psurf = 0; _pslide = 0; _pjump = 0;                // DS : warp -> à pied
+    _phm = 0; _phm_t = 0;                               // tâche CS annulée
     // visibilité DS : hiddenFlag SET au chargement -> objet non spawné
     // (map_object.c l.617 : les objets sans script spawnett toujours)
     for (size_t i = 0; i < _objects.size(); i++) {
@@ -365,6 +366,21 @@ void World::_set_header(int header_id, bool init) {
         _wthr.dust = (lt.tm_mon == 0 && lt.tm_mday == 12 && H->wthr >= 34);
     }
     _wthr_base = _weather_base(H->wthr);
+    // DS field_map_change : Flash/Défog mémorisés (flags système 2426/2427,
+    // posés par DoFlashFunc/DoDefogFunc) effacent la météo de la nouvelle
+    // map si c'est une grotte sombre (16) ou de la brume (14). Hors grotte
+    // (mapType != CAVE) les deux flags sont effacés à l'arrivée.
+    if (H->mtype != 3) {
+        _vm.set_flag(2433, false);
+        _vm.set_flag(2434, false);
+    }
+    // DS field_map_change_flags : FLAG_ON_CYCLING_ROAD (2459) et le flag
+    // avatar ForceBicycling sont effacés à chaque changement de map —
+    // les tuiles frontière de la piste cyclable les réarment au passage.
+    _vm.set_flag(2459, false);
+    _bon_road = false;
+    if ((H->wthr == 14 && _vm.flag(2434)) || (H->wthr == 16 && _vm.flag(2433)))
+        _wthr_base = 0;
     _vm.cb_msg = [this](int id, bool instant) {
         if (_tv_suppress) {                          // scène TV : texte routé
             auto& bank = _bank_msgs(_cur_bank);      //  vers l'écran du poste
@@ -462,8 +478,8 @@ void World::_set_header(int header_id, bool init) {
         case 105:                                    // symbole genre mon
             _buf[slot] = val == 0 ? "♂" : val == 1 ? "♀" : "-"; break;
         case 106: {                                  // BufferFloorNumber : 361
-            auto& b = _bank_msgs(361);               // 0->B1F(76), n->1F+n-1(70+n)
-            int e = val <= 0 ? 76 : 70 + val;
+            auto& b = _bank_msgs(361);               // 0->B1F(121), n->1F+n-1(115+n)
+            int e = val <= 0 ? 121 : 115 + val;
             _buf[slot] = (e >= 0 && e < (int)b.size())
                 ? _fmt_msg(b[e]) : "?"; break;
         }
@@ -571,6 +587,29 @@ void World::_set_header(int header_id, bool init) {
         _ptx = _ppos.x + ddx * TILE; _ptz = _ppos.z + ddz * TILE;
         _pstep = 2; _pstep_spd = 60.f; _pjump = 1;    // saut d'eau 8 ticks @30Hz
         _warp_cd_x = _warp_cd_z = -9999;              // rencontre possible
+    };
+    _vm.cb_climb = [this]() {                // UseRockClimb (field_moves fn3) :
+        int ddx, ddz; dirv(_pdir, ddx, ddz); // SubTask_HopOn : saut JUMP_NEAR
+        _ptx = _ppos.x + ddx * TILE; _ptz = _ppos.z + ddz * TILE;
+        {   Vec3 tp{_ptx, _ppos.y, _ptz};
+            float gy = _ground_y(tp, _ppos.y + TILE);   // rampe de la paroi
+            _pty = gy > -1e8f ? gy : _ppos.y; }
+        _pstep = 2; _pstep_spd = 120.f; _pjump = 1;   // FAST : 8 ticks @30Hz
+        _phm = 1;
+        if (_snd) { int s = _snd->seq_named("SEQ_SE_DP_UG_023_sseq");
+            if (s >= 0) _snd->se(s); }
+    };
+    _vm.cb_wfall = [this]() {                // UseWaterfall (field_moves fn6) :
+        _wfall_start(_pdir == 1);            // DS : DIR_NORTH -> montée,
+    };                                       // sinon descente (toujours sud)
+    _vm.cb_wclear = [this]() {               // Flash/Défog (0xC3/0xC4) : la
+        _wthr_base = 0;                      // météo affichée passe à CLEAR ;
+    };                                       // tick -> fondu de sortie
+    _vm.cb_hmcut = [this](int slot) {        // PlayHmCutIn : lance le cut-in
+        _cutin_slot = slot;                  // (bande blanche + sprite CS qui
+        _cutin_f = 0.f; _cutin_cry = false;  // traverse), la VM attend HMCUT ;
+        _cutin_sp = (slot >= 0 && slot < (int)_vm.party.size())
+            ? _vm.party[slot].species : 0;   // espèce du lanceur
     };
     _vm.cb_findmove = [this](int mv) {       // FindPartySlotWithMove :
         for (int i = 0; i < (int)_vm.party.size(); i++) { // slot du 1er Pokémon
@@ -953,14 +992,22 @@ void World::_set_header(int header_id, bool init) {
             return 1; }
         case 1: _pstate_pending = a; return 1;          // SetPlayerState
         case 2: _pstate = _pstate_pending; return 1;    // ChangePlayerState
+        case 14: _bon_road = a != 0; return 1;          // ForceBicycling (avatar flag DS)
+        case 15: _vm.set_var(a, _pstate); return 1;     // GetPlayerState -> var
+        case 16: _pstate = a ? 1 : (_pstate == 1 ? 0 : _pstate);  // SetPlayerBike
+            _bspd = 0; _bbrake = false; _bslope = 0; return 1;
+        case 17: {                                    // SetCyclingBGM (SEQ_BICYCLE)
+            int s = _snd ? _snd->seq_named("SEQ_BICYCLE") : -1;
+            if (s < 0 && _snd) s = _snd->seq_named("SEQ_PL_BICYCLE");
+            set_bgm_override(s); return 1; }
         case 3: _cam_mode = 1; _cam_x = (float)a; _cam_z = (float)b; return 1;
         case 4: _cam_mode = 0; return 1;                // RestoreCamera
         case 5: _cam_mode = 2; _cam_x = (float)a; _cam_z = (float)b; return 1;
         case 6: _cam_mode = 0; return 1;                // RemoveCameraOverrideObj
-        case 7: {                                       // DestroyObstacle
-            for (size_t i = 0; i < _objects.size(); i++)
-                if (_objects[i].id == a) _objgone.insert((int)i);
-            return 1; }
+        case 7:                                         // DestroyObstacle (anim)
+            // DS : arg0 = TYPE d'obstacle (0 arbre/1 rocher/2 bloc), pas un
+            // localID — la suppression réelle vient du RemoveObject suivant.
+            return 1;
         case 8: _seqvol[a] = b; if (_snd) _snd->seq_vol(a, b); return 1;
         case 9: _want_xmenu = true; return 1;           // ShowStartMenu
         case 10:                                        // MoveCamera : offset joueur
@@ -980,12 +1027,10 @@ void World::_set_header(int header_id, bool init) {
             }
             return 1;
         case 13: {                                      // ShowCurrentFloor : fenêtre "Étage XF"
-            auto& bk = _bank_msgs(361);                 // DS : 15=libellé, 16=nom bufferisé
-            int e = b <= 0 ? 76 : 70 + b;               // même table que kind 106
-            std::string nm = (e >= 0 && e < (int)bk.size())
-                ? _fmt_msg(bk[e]) : "?";
+            auto& bk = _bank_msgs(361);                 // DS : 15=libellé, 16={STRVAR}=_buf[0]
             std::string lb = (15 < (int)bk.size()) ? _fmt_msg(bk[15]) : "";
-            _floor_txt = lb + "\n" + nm;
+            _floor_txt = lb + "\n" + _buf[0];
+            _floor_var = a;                             // fermeture quand la var vaut 0xFFFF
             return 1; }
         }
         return 0;
@@ -1252,6 +1297,33 @@ void World::load_map(int header_id, int dest_warp) {
 // instanciation d'un prop (corps par-prop de _inst_props, réutilisé par
 // _spawn_prop pour les props dynamiques type nappe d'arène). ct_world reçoit
 // les triangles de collision transformés (nullptr = ignorés — ex. nappe).
+// build_model_matshp.dat : paires (matériau, shape) par modèle — dessinées
+// sans transform de nœud (NNS_G3dDraw1Mat1Shp sous la base du prop) : la porte
+// intégrée des maisons reste ainsi à l'intérieur du bâtiment et libère
+// l'embrasure pour le prop porte animé.
+const std::vector<std::pair<int, int>>* World::_matshp_pairs(int model) {
+    if (!_matshp_loaded) {
+        _matshp_loaded = true;
+        const Bytes& d = _db->open_path(
+            "/fielddata/build_model/build_model_matshp.dat");
+        if (d.size() >= 4) {
+            int nloc = u16(d, 0), nids = u16(d, 2);
+            size_t ids_off = 4 + (size_t)nloc * 4;
+            for (int m = 0; m < nloc; m++) {
+                int cnt = u16(d, 4 + m * 4), idx = u16(d, 6 + m * 4);
+                auto& v = _matshp[m];
+                for (int i = 0; i < cnt && idx + i < nids; i++) {
+                    size_t o = ids_off + (idx + i) * 4;
+                    if (o + 4 > d.size()) break;
+                    v.push_back({u16(d, o), u16(d, o + 2)});
+                }
+            }
+        }
+    }
+    auto it = _matshp.find(model);
+    return it != _matshp.end() && !it->second.empty() ? &it->second : nullptr;
+}
+
 World::PropInst World::_prop_make(const LandProp& lp, Vec3 org, int64_t cell,
     std::vector<Vec3>* ct_world) {
     PropInst pi;
@@ -1300,7 +1372,39 @@ World::PropInst World::_prop_make(const LandProp& lp, Vec3 org, int64_t cell,
     auto& texs = model->textures.empty() ? _texset : model->textures;
     if (verbose) printf("    [prop %d] mats=%d pos=%.0f,%.0f,%.0f\n", (int)lp.model,
         (int)model->meshes.size(), pi.pos.x, pi.pos.y, pi.pos.z);
-    for (auto& mg : model->meshes) {
+    // liste de dessin : matshp = paires (matériau, shape) dessinées SANS
+    // transform de nœud (NNS_G3dDraw1Mat1Shp sous la base du prop — la porte
+    // intégrée reste alors dans la maison et libère l'embrasure) ; sinon
+    // chaque groupe avec son propre matériau.
+    struct Draw { const bmd::MeshGroup* g; const bmd::MatDef* md; int unx; };
+    std::vector<Draw> draws; std::vector<M4> unxs;
+    if (const auto* pairs = _matshp_pairs(pi.model)) {
+        unxs.reserve(pairs->size());
+        for (auto& [mi, sj] : *pairs) {
+            const bmd::MeshGroup* g = nullptr;
+            for (auto& mg : model->meshes)
+                if (mg.shape == sj) { g = &mg; break; }
+            if (!g || mi < 0 || mi >= (int)model->mats.size()) continue;
+            // Draw1Mat1Shp = sommets bruts du shape sous la base du prop :
+            // on retire le nœud (bones[node]) mais PAS le scale_basis du
+            // flux de rendu — sinon le modèle rapetisserait d'un facteur up_s.
+            unxs.push_back(g->node >= 0 && g->node < (int)model->bones.size()
+                ? model->bones[g->node].inverse() : M4::ident());
+            draws.push_back({g, &model->mats[mi], (int)unxs.size() - 1});
+        }
+    }
+    if (draws.empty())
+        for (auto& mg : model->meshes)
+            draws.push_back({&mg, &mg.matdef, -1});
+    for (auto& ds : draws) {
+        bmd::MeshGroup mg = *ds.g;
+        mg.matdef = *ds.md;
+        if (ds.unx >= 0)                        // sommets -> repère nœud (DS)
+            for (auto& pr : mg.prims)
+                for (auto& v : pr.v) {
+                    v.p = unxs[ds.unx].xform(v.p);
+                    v.n = unxs[ds.unx].xform_n(v.n);
+                }
         std::vector<Vec3> ct;
         Vec3 o{0,0,0};
         auto buf = _tris(mg, o, &ct);
@@ -1367,9 +1471,10 @@ World::PropInst World::_prop_make(const LandProp& lp, Vec3 org, int64_t cell,
                 mg.matdef.name.c_str(), r, gg, bb);
         }
         pi.meshes.push_back(g);
-        // nœud du group pour les anims (portes) : delta = anim * repos⁻¹
-        pi.mkey.push_back(bmd::group_key(mg.mat, mg.node));
-        pi.minv.push_back(mg.xf.inverse());
+        // nœud du group pour les anims (portes) : delta = anim * repos⁻¹ —
+        // draws matshp : sommets déjà node-local, pas de nœud animable (-1)
+        pi.mkey.push_back(ds.unx >= 0 ? -1 : bmd::group_key(mg.mat, mg.node));
+        pi.minv.push_back(ds.unx >= 0 ? M4::ident() : mg.xf.inverse());
         // collision props : transformés par pos/rot/scale — dans
         // prop_tris (bloque le déplacement) PAS col_tris : la DS
         // n'utilise que les plaques BDHC pour la hauteur d'objet
@@ -3052,6 +3157,26 @@ void World::scan_skins(const std::string& dir) {
                         d + ((size_t)r * 32 * w + c * 32) * 4, (size_t)w * 4);
         }
         stbi_image_free(d);
+        // sheet vélo dédiée : skins/bike/<nom>.png — 24 frames 32×32 dans
+        // l'ordre pl_cyclehero (N 0-3, S 4-7, O 8-11, E 12-15 pédalage ;
+        // 16-21 coast/idle ; 20-23 montage). Colonne 32×768 ou grille.
+        std::string bp = dir + "/bike/" + ss.name + ".png";
+        if (unsigned char* bd = stbi_load(bp.c_str(), &w, &h, nullptr, 4)) {
+            if (w % 32 == 0 && h % 32 == 0 && (w / 32) * (h / 32) >= 24) {
+                int cols = w / 32;
+                ss.bike.assign(24, nullptr);
+                for (int f2 = 0; f2 < 24; f2++) {
+                    int cx = (f2 % cols) * 32, cy = (f2 / cols) * 32;
+                    auto im = std::make_shared<Image>();
+                    im->create(32, 32);
+                    for (int y = 0; y < 32; y++)
+                        memcpy(&im->px[y * 128],
+                            bd + ((size_t)(cy + y) * w + cx) * 4, 128);
+                    ss.bike[f2] = im;
+                }
+            }
+            stbi_image_free(bd);
+        }
         if (ss.frames[0] || ss.frames[4])
             _skins.push_back(std::move(ss));
     }
@@ -3069,16 +3194,14 @@ void World::ensure_skins() {
 
 // dos du joueur en combat : skins/back/<nom>.png quand la skin perso en a un
 // (Gold/Lyra HGSS), sinon le dos du héros/héroïne par genre (trbgra Platine)
-uint32_t World::skin_back_tex(int i) {
-    ensure_skins();
-    if (i < 0 || i >= (int)_skins.size()) return 0;
+static uint32_t _side_tex(const std::string& dir, const std::string& nm) {
     static std::map<std::string, uint32_t> cache;
-    const std::string& nm = _skins[i].name;
-    auto it = cache.find(nm);
+    std::string key = dir + "/" + nm;
+    auto it = cache.find(key);
     if (it == cache.end()) {
-        uint32_t& t = cache[nm];
+        uint32_t& t = cache[key];
         int w, h;
-        std::string p = _skindir + "/back/" + nm + ".png";
+        std::string p = dir + "/" + nm + ".png";
         if (unsigned char* d = stbi_load(p.c_str(), &w, &h, nullptr, 4)) {
             Image im;
             im.create(w, h);
@@ -3086,9 +3209,37 @@ uint32_t World::skin_back_tex(int i) {
             t = rnd::upload_tex_nearest(im);
             stbi_image_free(d);
         }
-        it = cache.find(nm);
+        it = cache.find(key);
     }
     return it->second;
+}
+
+uint32_t World::skin_back_tex(int i) {
+    ensure_skins();
+    if (i < 0 || i >= (int)_skins.size()) return 0;
+    return _side_tex(_skindir + "/back", _skins[i].name);
+}
+
+// face avant d'une skin perso : skins/front/<nom>.png
+uint32_t World::skin_front_tex(int i) {
+    ensure_skins();
+    if (i < 0 || i >= (int)_skins.size()) return 0;
+    return _side_tex(_skindir + "/front", _skins[i].name);
+}
+
+// dos du héros par défaut : skins/back/PLAYER_M.png / PLAYER_F.png
+// remplace le dos trbgra quand le fichier existe (Lucas custom HD par ex.)
+uint32_t World::hero_back_tex(int g) {
+    ensure_skins();
+    uint32_t t = _side_tex(_skindir + "/back", g ? "PLAYER_F" : "PLAYER_M");
+    return t ? t : trainer_back_tex(g);
+}
+
+// face du héros par défaut : skins/front/PLAYER_M.png / PLAYER_F.png
+uint32_t World::hero_front_tex(int g) {
+    ensure_skins();
+    uint32_t t = _side_tex(_skindir + "/front", g ? "PLAYER_F" : "PLAYER_M");
+    return t ? t : trainer_front_tex(g);
 }
 
 uint32_t World::player_back_tex() {
@@ -3096,7 +3247,15 @@ uint32_t World::player_back_tex() {
         uint32_t t = skin_back_tex(skin - SKIN_BASE);
         if (t) return t;
     }
-    return trainer_back_tex(_gender ? 1 : 0);
+    return hero_back_tex(_gender);
+}
+
+uint32_t World::player_front_tex() {
+    if (skin >= SKIN_BASE) {
+        uint32_t t = skin_front_tex(skin - SKIN_BASE);
+        if (t) return t;
+    }
+    return hero_front_tex(_gender);
 }
 
 const World::SkinSheet* World::skin_custom(int i) const {
@@ -3572,6 +3731,7 @@ bool World::save(const char* path) const {
     fwrite(&ex, 2, 1, f); fwrite(&ez, 2, 1, f);
     int16_t hf = (int16_t)_vm.hof_entries, sc = (int16_t)_vm.safari_caught;
     fwrite(&hf, 2, 1, f); fwrite(&sc, 2, 1, f);
+    int16_t rk = (int16_t)rskin; fwrite(&rk, 2, 1, f);   // v17 : skin rival
     fclose(f);
     return true;
 }
@@ -3944,6 +4104,8 @@ bool World::load(const char* path) {
             int16_t hf = 0, sc = 0;
             fread(&hf, 2, 1, f); fread(&sc, 2, 1, f);
             _vm.hof_entries = hf; _vm.safari_caught = sc;
+            int16_t rk = -1;
+            if (fread(&rk, 2, 1, f) == 1) rskin = rk;   // v17 : skin rival
         }
     }
     fclose(f);

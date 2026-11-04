@@ -15,7 +15,7 @@ public:
     struct OpDef { uint16_t op; const char* name; const char* widths; };
     enum St { DONE, RUN, MSG, WAITBTN, YESNO, MOVE, WAITTIME, WAITFADE, MENU,
               STARTER, BATTLE, SHOP, WAITANIM, WAITSND, PCBOX, NICK, PARTYPICK,
-              MOVEPICK };
+              MOVEPICK, HMCUT };
 
     bool load(const Bytes* file);            // membre scr_seq (réf stable)
     bool load_std(const Bytes* file);        // scripts_common (CallStandard)
@@ -67,6 +67,10 @@ public:
     std::function<void(int,bool)>                   cb_dooranim;  // tag, open?
     std::function<int(int)>                         cb_doorbusy;  // tag -> anim ?
     std::function<void()>                           cb_surf;      // UseSurf -> monter sur l'eau
+    std::function<void()>                           cb_climb;     // UseRockClimb -> escalade
+    std::function<void()>                           cb_wfall;     // UseWaterfall -> cascade
+    std::function<void()>                           cb_wclear;    // Flash/Defog -> météo CLEAR
+    std::function<void(int)>                        cb_hmcut;     // PlayHmCutIn -> cut-in CS (slot)
     std::function<int(int)>                         cb_findmove;  // FindPartySlotWithMove
     std::function<void(int sp,int* t1,int* t2)>     cb_mtypes;    // types espèce
     std::function<int(int sp,uint32_t pid)>         cb_mgender;   // genre mon (0 m/1 f/2 aucun)

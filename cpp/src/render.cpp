@@ -435,6 +435,10 @@ void set_cinema(int on) {
 }
 int cinema_on() { return _cine; }
 void set_post(const PostFx* p) { _post = p ? *p : PostFx{}; }
+static float _duv[2] = {-10.f, -10.f}, _dk = 0.f, _dr = 0.3f;
+void set_dark(float ux, float uy, float k, float r) {
+    _duv[0] = ux; _duv[1] = uy; _dk = k; _dr = r;
+}
 
 static const char* CVS = R"(#version 330 core
 out vec2 vUv;
@@ -451,6 +455,9 @@ uniform sampler2D tColor, tField, tDepth;
 uniform vec2 uStep;              // un pixel DS (fenêtre / 256x192)
 uniform vec3 uEdge[8];           // contour par groupe d'id (area_data DS)
 uniform float uFill;             // 1 = remplir le vide (pillarbox intérieur)
+uniform vec2 uDarkPos;           // halo joueur en uv (grotte sombre DS)
+uniform float uDarkK, uDarkR;
+uniform vec2 uRes;
 out vec4 frag;
 int fid(vec4 f) { return int(f.r * 63.0 + 0.5); }
 void main() {
@@ -476,6 +483,12 @@ void main() {
         // sinon : AA DS — 17/32 du contour sur le pixel voisin (loin)
         else frag.rgb = (e * 17.0 + texture(tColor, n).rgb * 15.0) / 32.0;
         break;
+    }
+    // grotte sombre DS (météo 16/29) : noir sauf un halo autour du joueur
+    if (uDarkK > 0.001) {
+        vec2 dd = (vUv - uDarkPos) * vec2(uRes.x / uRes.y, 1.0);
+        float dk = smoothstep(uDarkR * 0.45, uDarkR, length(dd));
+        frag.rgb *= 1.0 - dk * uDarkK * 0.92;
     }
 })";
 
@@ -632,6 +645,8 @@ uniform vec3 uFogCol;
 uniform float uBloomK, uExposure, uEdgeK, uDofK, uRaysK, uGrain, uVign;
 uniform float uWet;
 uniform float uRoom;
+uniform vec2 uDarkPos;
+uniform float uDarkK, uDarkR;
 out vec4 frag;
 int fid(vec4 f) { return int(f.r * 63.0 + 0.5); }
 float lin(float d) {
@@ -706,6 +721,13 @@ void main() {
             : (e * 17.0 + texture(tColor, n).rgb * 15.0) / 32.0;
         col = mix(col, ec, uEdgeK);
         break;
+    }
+    // grotte sombre DS (météo 16/29) : tout s'éteint sauf un halo autour
+    // du joueur — Flash (météo -> CLEAR) retire l'effet entièrement.
+    if (uDarkK > 0.001) {
+        vec2 dd = (vUv - uDarkPos) * vec2(uRes.x / uRes.y, 1.0);
+        float dk = smoothstep(uDarkR * 0.45, uDarkR, length(dd));
+        col *= 1.0 - dk * uDarkK * 0.92;
     }
     frag = vec4(col, 1.0);
 }
@@ -839,6 +861,12 @@ void composite(int w, int h) {
     pglUniform2f(pglGetUniformLocation(pr, "uStep"), 1.f/256.f, 1.f/192.f);
     pglUniform1f(pglGetUniformLocation(pr, "uFill"),
                  _cindoor && !getenv("NOFILL") ? 1.f : 0.f);
+    // halo grotte sombre : commun aux deux passes (DS + cinéma)
+    pglUniform2f(pglGetUniformLocation(pr, "uDarkPos"), _duv[0], _duv[1]);
+    pglUniform1f(pglGetUniformLocation(pr, "uDarkK"), _dk);
+    pglUniform1f(pglGetUniformLocation(pr, "uDarkR"), _dr);
+    pglUniform2f(pglGetUniformLocation(pr, "uRes"),
+                 (float)_msaa_w, (float)_msaa_h);
     pglActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, _ctex);
     pglActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, _ftex);
     pglActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, _dtex);
@@ -1066,6 +1094,8 @@ uint32_t upload_tex_nearest(const Image& img) {
     near_apply(t);
     return t;
 }
+
+
 
 void set_tex_filter(int linear) {
     s_tex_lin = linear;

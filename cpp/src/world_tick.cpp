@@ -81,8 +81,11 @@ void World::_weather_tick(float dt) {
     } else w.target = base;
     static bool wdbg = getenv("WTHDBG") != nullptr;
     if (wdbg && w.target != _wthr_dbg_last) {
-        printf("[wthr] cible %d -> %d (base %d, dyn %d, saison %d)\n",
-            _wthr_dbg_last, w.target, base, (int)dbg_weather_dyn, _season());
+        printf("[wthr] cible %d -> %d (base %d, dyn %d, saison %d) "
+            "flags FM str=%d flash=%d defog=%d\n",
+            _wthr_dbg_last, w.target, base, (int)dbg_weather_dyn, _season(),
+            _vm.flag(2409) ? 1 : 0, _vm.flag(2433) ? 1 : 0,
+            _vm.flag(2434) ? 1 : 0);
         _wthr_dbg_last = w.target;
     }
 
@@ -277,14 +280,19 @@ int World::_season() const {
 void World::update(float dt, float ix, float iz) {
     if (_header < 0) return;
     if (dt > 0) _vm.play_sec += dt;             // temps de jeu (sauvegarde v14)
+    if (_floor_var >= 0 && _vm.var(_floor_var) == 0xFFFF) {
+        _floor_txt.clear();                     // DS : fenêtre étage fermée
+        _floor_var = -1;                        //   quand *selectedOptionVar==0xFFFF
+    }
     static int inpdbg = -1;
     if (inpdbg < 0) inpdbg = getenv("INPDBG") != nullptr;
     if (inpdbg && (ix || iz))
         printf("[inp] ix=%.0f iz=%.0f frozen=%d busy=%d wt=%d wild=%.2f "
-            "spot=%d lost=%d yesno=%d pstep=%d pdir=%d beh=%02x\n",
+            "spot=%d lost=%d yesno=%d pstep=%d pdir=%d beh=%02x vms=%d pc=%d\n",
             ix, iz, (int)ui_frozen, (int)_vm.busy(), _wt.st, _wild_t,
             _appr[0].obj, (int)_lost_pc, (int)_yesno, _pstep, _pdir,
-            _tile_beh((int)floorf(_ppos.x / TILE), (int)floorf(_ppos.z / TILE)));
+            _tile_beh((int)floorf(_ppos.x / TILE), (int)floorf(_ppos.z / TILE)),
+            (int)_vm.state(), _vm.pc());
     if (ui_frozen) {                            // menu X : monde figé (DS)
         ix = iz = 0;
         dt = 0;
@@ -491,6 +499,30 @@ void World::update(float dt, float ix, float iz) {
         _vm.continue_after(ScriptVM::WAITANIM); _vm.step();
         if (!_vm.busy()) _script_end_box();
     }
+    // cut-in CS (HMCutIn DS) : ~110 frames à 60fps ; cri quand le sprite
+    // arrive au centre, reprise du script en fin d'anim.
+    if (_cutin_slot >= 0) {
+        _cutin_f += dt * 60.f;
+        if (getenv("CUTDBG") && ((int)_cutin_f % 20) == 0)
+            printf("[cutin] f=%.1f slot=%d vmst=%d\n", _cutin_f,
+                _cutin_slot, (int)_vm.state());
+        if (!_cutin_cry && _cutin_f >= 62.f) {            // sprite centré
+            _cutin_cry = true;
+            if (_snd && _cutin_sp > 0) _snd->cry(_cutin_sp);
+        }
+        if (_cutin_f >= 118.f) {
+            _cutin_slot = -1;
+            if (_vm.state() == ScriptVM::HMCUT) {
+                _vm.continue_after(ScriptVM::HMCUT); _vm.step();
+                if (!_vm.busy()) _script_end_box();
+            }
+            if (_cutin_after) {          // CS dédiée : tâche après le cut-in
+                int after = _cutin_after; _cutin_after = 0;
+                if (after == 3) _sweet_scent();
+                else _fm_warp(after == 1);
+            }
+        }
+    }
     if (_tv_suppress && !_vm.busy())             // scène TV avalée terminée :
         _tv_suppress = _tv_scene = false;        //  les boîtes redeviennent actives
     if (_vm.state() == ScriptVM::WAITSND) {
@@ -640,8 +672,29 @@ void World::update(float dt, float ix, float iz) {
         }
         return -1;
     };
+    // cascade DS (SubTask_Waterfall_* : 96 frames) — montée : y seul 32
+    // frames puis y+z 64 ; descente : z seul 32 puis y+z 64 ; clamp sur
+    // la cible chaque frame puis snap final (MapObject_UpdateCoords).
+    if (_phm >= 4) {
+        float f = dt * 30.f;                             // frames @30Hz
+        if (_phm != 6) _ppos.y += _phm_d.y * f;
+        if (_phm != 4) _ppos.z += _phm_d.z * f;
+        if (_phm_d.y != 0 &&
+            (_phm_d.y > 0 ? _ppos.y > _phm_to.y : _ppos.y < _phm_to.y))
+            _ppos.y = _phm_to.y;
+        if (_phm_d.z != 0 &&
+            (_phm_d.z > 0 ? _ppos.z > _phm_to.z : _ppos.z < _phm_to.z))
+            _ppos.z = _phm_to.z;
+        _phm_t += f;
+        if ((_phm == 4 || _phm == 6) && _phm_t >= 32.f) { _phm++; _phm_t = 0; }
+        else if ((_phm == 5 || _phm == 7) && _phm_t >= 64.f) {
+            _ppos = _phm_to; _phm = 0; _phm_t = 0;
+        }
+        _panim += dt * 8.f; if (_panim > 4.f) _panim -= 4.f;  // rame
+        return;                                 // trajet imposé : le reste gèle
+    }
     int want = iz < 0 ? 1 : iz > 0 ? 0 : ix < 0 ? 2 : ix > 0 ? 3 : -1; // dir monde
-    // Monde Distorsion : STEPS DS (support.ts OpenSinnoh) — pas d'une tuile
+    // Monde Distorsion : STEPS DS — pas d'une tuile
     // en espace partagé par surface [kind-1][dir monde 0=S 1=N 2=O 3=E].
     static const int8_t DWS[3][4][3] = {
         {{0,-1,0},{0,1,0},{0,0,1},{0,0,-1}},    // mur ouest : haut=+y, gch=+z
@@ -692,6 +745,7 @@ void World::update(float dt, float ix, float iz) {
             // hauteur faisait rebondir le perso en fin de pas sur pente).
             if (!_pjump && dvert) _ppos.y = _pty;
             _pstep = 0; _pjump = 0;
+            if (_phm) _climb_next();            // escalade : enchaîne la tâche
             // Monde Distorsion : HandlePlayerMoved DS (triggers fantômes,
             // angles caméra, points de saut sur plateformes)
             if (_dw.on) _dw_moved(_pdir);
@@ -744,6 +798,19 @@ void World::update(float dt, float ix, float iz) {
                 _pstep, _pstep_t, want, _pdir, dt);
         if (_pstep == 0) {
             if (_pslide) want = _pdir;              // glace : pas de choix de dir
+            // ── vélo DS (player_move.c) : paliers 80/120/160/240 px/s ;
+            // roue libre : braquer autre direction à speed>=2 ou lâcher
+            // l'input = continuer dans l'axe en décélérant d'un palier
+            // par tuile jusqu'à l'arrêt.
+            bool bike = _pstate == 1 && !_psurf;
+            bool bike_coast = false;
+            if (bike) {
+                bool wrong = want >= 0 && want != _pdir;
+                if (want < 0 || wrong) {
+                    if (_bspd > 0) { bike_coast = true; want = _pdir; }
+                    else { _bspd = 0; _bbrake = false; }
+                }
+            }
             // Canalave : trajet forcé — horizontal = marche dans le sens de
             // la plateforme (WALK_FASTER DS), vertical = immobile (porté)
             if (_gym.kind == 4 && _gym.cn_move >= 0) {
@@ -767,12 +834,14 @@ void World::update(float dt, float ix, float iz) {
             if (_dw.on && _dw.jump_t > 0) want = -1;
             // vortex DoDWWarp : terrain gelé pendant la cinématique DS
             if (_dwarp_t >= 0) want = -1;
+            if (_phm || _cutin_slot >= 0) want = -1; // tâche/cut-in CS : input gelé
             if (want < 0) { _panim = 0.f; }
             // Distorsion : saut plateforme déclenché par la PRESSION sur la
             // tuile trigger (avant le pas — le retour mur -> terre sinon ne
             // part jamais, le pas hors de la paroi étant bloqué).
             else if (_dw.on && _dw_jump_press(want)) { }
             else if (want != _pdir) {                    // TURNING : face d'abord
+                if (bike) { _bspd = 0; _bbrake = false; }  // braquage à l'arrêt
                 _pdir = want; _pstep = 1; _pstep_t = 2.f / 30.f; // 2 ticks @30Hz DS
                 _pface = (_dw.on && _dw.fp_kind > 0)
                     ? DWF[_dw.fp_kind - 1][want & 3] : -1;
@@ -840,13 +909,44 @@ void World::update(float dt, float ix, float iz) {
                 bool jtwice = bh == JM2[_pdir] &&
                     !(_dw.on && _dw.fp_kind > 0);
                 if (_surfable(bh)) nblock = !_psurf;   // eau : surf only
+                // vélo DS : ponts vélo (0x76-0x7D) interdits à pied ;
+                // à vélo seulement dans l'axe (WillBeOnBikeBridge).
+                if (bh >= 0x76 && bh <= 0x7D) {
+                    bool ns = bh <= 0x79;           // N/S <-> E/O selon id
+                    if (bike) { if (ns == (_pdir == 2 || _pdir == 3)) nblock = true; }
+                    else nblock = true;
+                }
+                // rampes vélo (0xD7/E, 0xD8/O) : saut forcé, sens unique
+                // (WillHitBikeRamp DS — la piste cyclable les descend).
+                bool bike_ramp = bike &&
+                    ((bh == 0xD7 && _pdir == 3) || (bh == 0xD8 && _pdir == 2));
+                // pentes boue (tuile courante 0xD9/0xDA, TileMove_BikeSlope) :
+                // montée nord exige speed 3 ; sinon glissière sud forcée.
+                int cb3 = _tile_beh(ptx, ptz);
+                if ((cb3 == 0xD9 || cb3 == 0xDA) && !_bslope && !bike_ramp) {
+                    if (_pdir == 1 && _bspd < 3) _bslope = 1;   // trop lent
+                    else if (_pdir == 0) _bslope = 2;            // descente
+                }
+                if (_bslope) {
+                    want = 0;                                   // forcé sud
+                    if (cb3 != 0xD9 && cb3 != 0xDA) _bslope = 0; // sorti
+                    else { ddx = 0; ddz = 1; ntx = ptx; ntz = ptz + 1;
+                           bh = _tile_beh(ntx, ntz);
+                           nblock = !noclip && _blocked(
+                               {ntx * TILE + TILE / 2, cy, ntz * TILE + TILE / 2});
+                           if (bh >= 0x76 && bh <= 0x7D) nblock = true; }
+                }
+                // ov5_021E04A8 DS : en surf, marcher sud sur une tuile
+                // cascade déclenche la descente au lieu du pas normal.
+                if (_psurf && _pdir == 0 && bh == 0x13) {
+                    _wfall_start(false); return; }
                 // Force (ov5_021DFF1C DS) : FLAG_STRENGTH_ACTIVE posé et un
                 // rocher (gfx 84) sur la tuile visée -> poussée de 1 tuile en
                 // 16 ticks si la tuile au-delà est libre ; dans le Monde
                 // Distorsion une tuile de chute l'autorise même bloquée
                 // (boulderWillFall). Le joueur reste sur place 8 ticks.
                 bool bpush = false;
-                if (!noclip && _vm.flag(2402)) {
+                if (!noclip && _vm.flag(2409)) {
                     int bidx = -1;
                     for (size_t i = 0; i < _objects.size(); i++) {
                         if (_objgone.count((int)i) || _objhide.count((int)i)) continue;
@@ -891,8 +991,8 @@ void World::update(float dt, float ix, float iz) {
                     ejump = ntx == jt[0] && ntz == jt[1] && ns == (jt[2] != 0);
                 }
                 if (bpush) { /* poussée lancée : _boulder_tick pilote */ }
-                else if ((bh == JMP[_pdir] || jtwice || ejump) &&
-                    (jtwice || !_blocked({(ntx + ddx) * TILE + TILE / 2,
+                else if ((bh == JMP[_pdir] || jtwice || ejump || bike_ramp) &&
+                    (jtwice || bike_ramp || !_blocked({(ntx + ddx) * TILE + TILE / 2,
                         _ppos.y + 4, (ntz + ddz) * TILE + TILE / 2}))) {
                     // JUMP_*_TWICE du Monde Distorsion : 3 tuiles en 24
                     // ticks (MOVEMENT_ACTION_JUMP_DISTORTION_WORLD DS :
@@ -903,7 +1003,7 @@ void World::update(float dt, float ix, float iz) {
                     _ptz = (ptz + jlen * ddz) * TILE + TILE / 2;
                     _pty = dwj ? (floorf(_ppos.y / TILE + 0.5f) + jlen * sdy) * TILE
                                : _ppos.y;
-                    _pstep_spd = 60.f;               // JumpFar : 2 tuiles/16 ticks @30Hz
+                    _pstep_spd = bike_ramp ? 120.f : 60.f;  // rampe : saut rapide DS
                     _pstep = 2;
                     _pjump = jtwice ? 3 : (dwj ? 0 : 2);  // arc = portée saut
                     if (verbose) printf("[jump] (%d,%d)->(%d,%d) beh=%d\n",
@@ -992,6 +1092,22 @@ void World::update(float dt, float ix, float iz) {
                     // glace fixe 4 ticks, surf fixe 4 ticks (B sans effet)
                     _pstep_spd = (_pslide || _psurf) ? 120.f
                         : (_can_run && run_held) ? 120.f : 60.f;
+                    // vélo DS : paliers speed 0-3 = 80/120/160/240 px/s ;
+                    // 3e vitesse = 160 fixe, 4e = accélère d'un palier par
+                    // tuile (AccelerateBike), roue libre = décélère
+                    // (DecelerateBike) ; pente boue = glissière/descente.
+                    if (bike) {
+                        static const float BSPD[4] = {80.f, 120.f, 160.f, 240.f};
+                        if (bike_coast) {
+                            _bspd--;
+                            if (_bspd <= 0) { _bspd = 0; _bbrake = false; }
+                        } else if (_bgear) _bspd = (_bspd < 3) ? _bspd + 1 : 3;
+                        else _bspd = 2;
+                        _pstep_spd = BSPD[_bspd];
+                        if (_bslope) _pstep_spd = _bslope == 1 ? 60.f : 240.f;
+                        if (!_bspd && !bike_coast && !_bslope) { /* speed0 = 80 */ }
+                        if (_bspd >= 2) _bbrake = true;      // BIKE_BRAKE DS
+                    }
                     // Grand Marais : paliers de vitesse du trajet tram DS
                     // (WALK_SLOWER..WALK_FASTER -> 15/30/60/120/240 px/s).
                     if (_gym.kind == 7 && _gym.gm_task >= 3) {
@@ -1246,7 +1362,7 @@ void World::update(float dt, float ix, float iz) {
 void World::_try_wild(int tb) {
     // en surf : le taux eau est indépendant du taux herbe (maps eau pure : 0)
     if (_vm.busy() || _vm.party.empty() || !_enc ||
-        (!_psurf && _enc_rate <= 0) ||
+        (!_psurf && _enc_rate <= 0 && !_wild_force) ||
         (getenv("NOENC") && !_wild_force)) return;   // debug : pas de rencontres
     static const uint8_t ENC_BEH[] = {          // sTileBehaviorFlags & ENCOUNTER (DS)
         0x02,0x03,0x05,0x06,0x08,0x0B,0x10,0x11,0x12,0x15,0x22,
@@ -1260,7 +1376,7 @@ void World::_try_wild(int tb) {
     int crate = _enc_rate;
     if (_psurf)
         crate = (_enc && _enc->size() >= 208) ? (int)u32(*_enc, 204) : 0;
-    if (crate <= 0) return;
+    if (crate <= 0 && !force) return;           // forcé (CS) : la table suffit
     int grace = 8 - std::min(8, ((crate << 8) / 10) >> 8);      // rate 30 -> 5 pas
     if (_enc_steps++ < grace && !force) {        // pas post-combat : 5% seulement
         if (rand() % 100 >= 5) return;
@@ -1340,6 +1456,16 @@ void World::_try_wild(int tb) {
     _pstep = 0;                                   // pas figé : combat démarre
     _wild_sp = species; _wild_lv = lvl;
     _btl_start(false, 0, species, lvl);
+}
+
+// Dolce-Parfum (SweetScentEncounter DS) : après l'anim odeur, une rencontre
+// sauvage forcée sur la table de la map — herbe à pied, eau en surf.
+void World::_sweet_scent() {
+    if (_vm.busy() || _vm.party.empty() || !_enc ||
+        _enc->size() < 100) return;             // map sans table : rien
+    _wild_force = true;
+    _try_wild(_psurf ? 0x10 : 0x02);            // tuile de rencontre synthétique
+    _wild_force = false;
 }
 
 // ── combat : décor/terrain selon la map (field_battle_data_transfer.c) ────────
@@ -1432,6 +1558,7 @@ void World::_btl_start(bool trainer, int tid, int sp, int lv, int tid2) {
             for (auto& m2 : p2) _btl.foes.push_back(m2);
             auto cs2 = battle_trainer_class_sprite(_db, tid2);
             _btl.foe_sprite2 = cs2.second;
+            _btl.foe_class2 = cs2.first;
             _btl.foe_split = np1;                   // réserve du slot E2 : [np1..)
             if (_btl.foes.size() > 1) _btl.fi2 = np1 < (int)_btl.foes.size()
                 ? np1 : 1;
@@ -1479,8 +1606,11 @@ void World::_btl_start(bool trainer, int tid, int sp, int lv, int tid2) {
                 battle_species_name(_db, _btl.foes[i2].species) + " !";
         }
         else
-            _btl.msg = tr("Le Dresseur veut se battre !\nIl envoie ",
-                          "The Trainer wants to battle!\nThey send out ") +
+            _btl.msg = (_btl.foe_class == 63      // rival : son nom choisi
+                ? rival_name() + tr(" veut se battre !\nIl envoie ",
+                                    " wants to battle!\nThey send out ")
+                : tr("Le Dresseur veut se battre !\nIl envoie ",
+                     "The Trainer wants to battle!\nThey send out ")) +
                 battle_species_name(_db, _btl.foes[0].species) + "!";
     } else                                          // DS : apparition puis lancer
         _btl.msg = tr("Un ", "A wild ") +

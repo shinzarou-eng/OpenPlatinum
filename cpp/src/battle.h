@@ -109,6 +109,7 @@ public:
     int foe_class = 0, foe_sprite = -1; // trdata : classe + sprite du dresseur adverse
     int tid2 = 0;                     // 2e dresseur (combat 2vs2)
     int foe_sprite2 = -1;             // sprite du 2e dresseur
+    int foe_class2 = 0;               // classe du 2e dresseur (trfgra)
     int foe_split = 0;                // duo : index du 1er Pokémon du 2e dresseur
                                       // (réserve du slot E2 ; 0 = équipe commune)
     uint8_t me_part = 0;              // masque des Pokémon joueur ayant participé (XP)

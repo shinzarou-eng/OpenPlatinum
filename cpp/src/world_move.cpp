@@ -609,3 +609,45 @@ bool World::_check_trainer_sight() {
 }
 
 // téléport debug (--pos) : stream les cellules + colle au sol
+// ── CS terrain : escalade + cascade (ov5_021DFB54.c DS) ──────────────────
+// Le script lance la tâche (InitCall : la VM reprend à la fin du trajet) ;
+// chez nous le script finit instantanément et _phm pilote le joueur dans
+// le tick — l'input est gelé tant que _phm != 0.
+
+// escalade : appelé à chaque atterrissage de pas tant que _phm ∈ 1..3.
+// LoopOrHopOff DS : la tuile devant est encore une paroi compatible ->
+// WALK_FAST ; sinon JUMP_NEAR_FAST de sortie puis fin de tâche.
+void World::_climb_next() {
+    if (_phm == 3) { _phm = 0; return; }
+    int ptx = (int)floorf(_ppos.x / TILE), ptz = (int)floorf(_ppos.z / TILE);
+    int ddx, ddz; dirv(_pdir, ddx, ddz);
+    int ntx = ptx + ddx, ntz = ptz + ddz;
+    int bh = _tile_beh(ntx, ntz);
+    // PlayerAvatar_CanUseRockClimb : N/S -> 0x4B, E/W -> 0x4C
+    bool wall = _pdir <= 1 ? bh == 0x4B : bh == 0x4C;
+    _ptx = ntx * TILE + TILE / 2; _ptz = ntz * TILE + TILE / 2;
+    {   Vec3 tp{_ptx, _ppos.y, _ptz};
+        float gy = _ground_y(tp, _ppos.y);
+        _pty = gy > -1e8f ? gy : _ppos.y; }
+    _pstep = 2; _pstep_spd = 120.f;               // FAST : 4px/tick DS
+    if (wall) { _pjump = 0; _phm = 2; }           // WALK_FAST sur la paroi
+    else      { _pjump = 1; _phm = 3; }           // JUMP_NEAR_FAST de sortie
+}
+
+// cascade : cible = 2 tuiles N (montée) ou S (descente), hauteur son-
+// dée sur le BDHC (RecalculatePositionHeight DS) ; deltas = /64 par
+// frame — montée : y seul 32 fr puis y+z 64 ; descente : z puis y+z.
+void World::_wfall_start(bool up) {
+    int ddx, ddz; dirv(up ? 1 : 0, ddx, ddz);
+    Vec3 t{_ppos.x + ddx * 2 * TILE, _ppos.y, _ppos.z + ddz * 2 * TILE};
+    float gy = _ground_y(t, up ? _ppos.y + 64.f : _ppos.y - 64.f);
+    if (gy > -1e8f) t.y = gy;
+    _phm_to = t;
+    _phm_d = {(t.x - _ppos.x) / 64.f, (t.y - _ppos.y) / 64.f,
+              (t.z - _ppos.z) / 64.f};
+    _phm_t = 0; _phm = up ? 4 : 6;
+    if (_snd) { int s = _snd->seq_named("SEQ_SE_DP_FW463_sseq");
+        if (s >= 0) _snd->se(s); }
+    if (verbose) printf("[wfall] %s -> (%.0f,%.0f,%.0f)\n",
+        up ? "montee" : "descente", t.x, t.y, t.z);
+}

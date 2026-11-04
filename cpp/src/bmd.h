@@ -22,6 +22,7 @@ struct MatDef {
 struct MeshGroup {
     int mat = -1;
     int node = -1;                   // nœud courant à l'émission (-1 inconnu, -2 skin)
+    int shape = -1;                  // index du shape NNS ayant produit les sommets
     M4  xf;                          // matrice courante au repos (sommets déjà cuits)
     MatDef matdef;
     std::vector<Prim> prims;

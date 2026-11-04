@@ -3,6 +3,7 @@
 #include "world_internal.h"
 #include "msg.h"
 #include "spr.h"
+#include "sdat.h"
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
@@ -381,6 +382,7 @@ void World::dlg_debug(int bank, int id) {
 // touche A / interaction
 void World::action() {
     if (_yesno || _header < 0 || _wt.st >= 0) return;  // transition : pas d'input
+    if (_phm || _cutin_slot >= 0) return;             // tâche/cut-in CS en cours
     if (_dlg_dismiss && !_vm.busy()) {              // boîte laissée ouverte : A ferme
         _dlg_dismiss = false; _mbox = false;
         _dialog.clear(); _dlg_chars = 0.f; _dlg_page = 0;
@@ -497,6 +499,10 @@ void World::action() {
         // Pokémon capable de Surf -> script 10004 (« Voulez-vous surfer ? »)
         if (!_psurf && _surfable(beh) && (_vm.badges & 8) && _party_can_surf())
             sid = 10004;
+        // DS PlayerAvatar_CanUseRockClimb : paroi N/S (0x4B) face nord/sud,
+        // paroi E/W (0x4C) face est/ouest -> script 10003 (field_moves fn3).
+        else if ((beh == 0x4B && _pdir <= 1) ||
+                 (beh == 0x4C && _pdir >= 2)) sid = 10003;
         else switch (beh) {
         case 0x83: if (_pdir == 1) sid = 2018; break;        // PC (face nord)
         case 0xE0: sid = 2500; break;                        // petite étagère 1
@@ -643,6 +649,7 @@ static int item_u8(const Bytes& d, int off) {
     return (int)d.size() > off ? d[off] : 0;
 }
 int World::item_field_use(int id) {              // utilisable sur le terrain
+    if (id == 450) return 5;                     // Bicyclette : montage/démontage
     if (id == 76 || id == 77 || id == 79) {      // Repousse DS : 200/250/100 pas
         _repel = id == 77 ? 250 : id == 76 ? 200 : 100;
         _repel_item = id;
@@ -710,6 +717,187 @@ bool World::_party_can_surf() const {
         if (_mon_learns_hm(m, 3)) return true;        // sait/peut apprendre CS03
     }
     return false;
+}
+
+// ── vélo (player_move.c / item_use_functions.c DS) ───────────────────────────
+void World::set_bike(bool on) {
+    _vm.sys_bike = on;
+    _pstate = on ? 1 : (_pstate == 1 ? 0 : _pstate);
+    _bspd = 0; _bbrake = false; _bslope = 0;
+    if (on && _snd) {                            // SEQ_BICYCLE DS (FieldBGM_SetOverride)
+        int s = _snd->seq_named("SEQ_BICYCLE");
+        if (s < 0) s = _snd->seq_named("SEQ_PL_BICYCLE");
+        set_bgm_override(s);
+    } else set_bgm_override(-1);
+}
+
+int World::use_bicycle() {                       // CanUseBicycle DS
+    int ptx = (int)floorf(_ppos.x / TILE), ptz = (int)floorf(_ppos.z / TILE);
+    int beh = _tile_beh(ptx, ptz);
+    if (_pstate == 1) {                          // démontage
+        if (_bon_road || (beh >= 0x76 && beh <= 0x7D)) return 3;
+        set_bike(false);
+        return 1;
+    }
+    const MapHeader* H = _db->header(_header);   // MapHeader_IsBikeAllowed
+    if (!H || !H->bike || _psurf || _pstate == 2 ||
+        beh == 0x03 || beh == 0xA4 || beh == 0xA5 || beh == 0xA6)
+        return 2;                                // haute herbe/boue/surf/map
+    set_bike(true);
+    return 0;
+}
+
+void World::bike_gear() {                        // B : 3e <-> 4e (sauf rampe)
+    if (_pstate != 1) return;
+    int beh = _tile_beh((int)floorf(_ppos.x / TILE),
+        (int)floorf(_ppos.z / TILE));
+    if (beh == 0xD7 || beh == 0xD8) return;
+    _bgear ^= 1;
+    if (_snd) {
+        int s = _snd->seq_named(_bgear ? "SEQ_SE_DP_GEAR" : "SEQ_SE_DP_GEAR2");
+        if (s >= 0) _snd->se(s);
+    }
+}
+
+// ── CS de terrain (FieldMoveTasks / menu équipe DS) ───────────────────
+// Ordre DS FIELD_MOVE_* : Coupe Vol Surf Force Anti-Brume Éclate-Roc
+// Cascade Escalade Flash Téléportation Tunnel Dolce-Parfum Babillard
+// Lait Meumeu Coquelet.
+static const int FM_MOVE_IDS[15] = {
+    15, 19, 57, 70, 432, 249, 127, 431, 148, 100, 91, 230, 448, 208, 135 };
+int World::field_move_id(int fm) const {
+    return (fm >= 0 && fm < 15) ? FM_MOVE_IDS[fm] : 0;
+}
+int World::_facing_obj() const {                  // DS sub_0203C9D4
+    int ptx = (int)floorf(_ppos.x / TILE), ptz = (int)floorf(_ppos.z / TILE);
+    int dx, dz; dirv(_pdir, dx, dz);
+    int tx = ptx + dx, tz = ptz + dz;
+    if (_tile_beh(tx, tz) == 0x80) { tx += dx; tz += dz; }   // comptoir
+    for (size_t i = 0; i < _objects.size(); i++) {
+        if (_objgone.count((int)i) || _objhide.count((int)i)) continue;
+        int ox = (int)floorf(_objpos[i].x / TILE);
+        int oz = (int)floorf(_objpos[i].z / TILE);
+        if (ox == tx && oz == tz) return (int)i;
+    }
+    return -1;
+}
+std::vector<int> World::party_field_moves(int slot) const {
+    std::vector<int> r;                              // DS GetContextMenuEntries
+    if (slot < 0 || slot >= (int)_vm.party.size()) return r;
+    auto& m = _vm.party[slot];
+    if (m.egg) return r;                             // œuf : pas de CS
+    for (int i = 0; i < m.nmoves && i < 4 && m.moves[i]; i++)
+        for (int f = 0; f < 15; f++)
+            if (m.moves[i] == FM_MOVE_IDS[f]) { r.push_back(f); break; }
+    return r;
+}
+int World::usable_field_moves() const {            // DS FieldMoves_SetUsableMoves
+    int u = 0, o = _facing_obj();
+    if (o >= 0) switch (_resolve_gfx(_objects[o].gfx)) {
+    case 84: u |= 1 << 3; break;                    // rocher Force
+    case 85: u |= 1 << 5; break;                    // rocher Éclate-Roc
+    case 86: u |= 1 << 0; break;                    // arbuste Coupe
+    }
+    int ptx = (int)floorf(_ppos.x / TILE), ptz = (int)floorf(_ppos.z / TILE);
+    int dx, dz; dirv(_pdir, dx, dz);
+    int nbeh = _tile_beh(ptx + dx, ptz + dz);       // tuile regardée
+    if (_surfable(nbeh)) u |= 1 << 2;               // CanUseSurf (ponts omis)
+    if ((nbeh == 0x4B && _pdir <= 1) || (nbeh == 0x4C && _pdir >= 2))
+        u |= 1 << 7;                                // CanUseRockClimb
+    if (nbeh == 0x13) u |= 1 << 6;                  // cascade
+    if (_wthr_base == 14) u |= 1 << 4;              // brume -> Anti-Brume
+    if (_wthr_base == 16) u |= 1 << 8;              // grotte sombre -> Flash
+    return u;
+}
+int World::field_move_error(int fm) const {        // DS FieldMoves_Check*
+    const MapHeader* H = _header >= 0 ? _db->header(_header) : nullptr;
+    int u = usable_field_moves();
+    bool partner = _vm.flag(2408);                  // FLAG_HAS_PARTNER
+    bool safpp = _vm.flag(2414) || _vm.flag(2432);  // SAFARI | PAL_PARK
+    bool surfing = _pstate == 2 || _psurf;          // PLAYER_AVATAR_SURFING
+    switch (fm) {
+    case 0:                                         // Coupe : badge Forêt
+        if (!(_vm.badges & 2)) return 2;
+        return (u & 1) ? 0 : 1;
+    case 1:                                         // Vol : badge Roc
+        if (!(_vm.badges & 4)) return 2;
+        if (!H || !H->fly) return 1;
+        if (partner) return 3;
+        return safpp ? 1 : 0;
+    case 2:                                         // Surf : badge Marais
+        if (!(_vm.badges & 8)) return 2;
+        if (surfing) return 4;
+        if (!(u & 4)) return 1;
+        return partner ? 3 : 0;
+    case 3:                                         // Force : badge Mine
+        if (!(_vm.badges & 32)) return 2;
+        return (u & 8) ? 0 : 1;
+    case 4:                                         // Anti-Brume : badge Fantôme
+        if (!(_vm.badges & 16)) return 2;
+        return (u & 16) ? 0 : 1;
+    case 5:                                         // Éclate-Roc : badge Charbon
+        if (!(_vm.badges & 1)) return 2;
+        if (surfing) return 1;
+        return (u & 32) ? 0 : 1;
+    case 6:                                         // Cascade : badge Glaçon
+        if (!(_vm.badges & 128)) return 2;
+        return (u & 64) ? 0 : 1;
+    case 7:                                         // Escalade : badge Frimas
+        if (!(_vm.badges & 64)) return 2;
+        if (!(u & 128)) return 1;
+        return partner ? 3 : 0;
+    case 8:                                         // Flash : grotte sombre
+        return (u & 256) ? 0 : 1;
+    case 9:                                         // Téléportation
+        if (!H || !H->fly || H->mtype == 1) return 1; // flyAllowed && !ville
+        if (partner) return 3;
+        return safpp ? 1 : 0;
+    case 10:                                        // Tunnel : grotte + corde
+        if (!H || H->mtype != 3 || !H->rope) return 1;
+        return partner ? 3 : 0;
+    case 11: return _vm.flag(2432) ? 1 : 0;         // Dolce-Parfum : hors Pal Park
+    case 12: return _dw.on ? 1 : 0;                 // Babillard : hors Distorsion
+    case 13: case 14: return 0;                     // Lait Meumeu / Coquelet
+    }
+    return 1;
+}
+int World::field_move_script(int fm) const {       // tâches scriptées DS
+    switch (fm) {
+    case 0: return 10008;                           // Coupe (menu)
+    case 5: return 10009;                           // Éclate-Roc
+    case 3: return 10010;                           // Force
+    case 7: return 10011;                           // Escalade
+    case 2: return 10012;                           // Surf
+    case 6: return 10013;                           // Cascade
+    case 4: return 10014;                           // Anti-Brume
+    case 8: return 10015;                           // Flash
+    }
+    return -1;      // Vol/Téléportation/Tunnel/Dolce-Parfum/Babillard : tâches dédiées
+}
+bool World::use_field_move(int slot, int fm) {     // FieldMoves_*Task DS
+    int sid = field_move_script(fm);
+    if (sid < 0) {                                  // tâche dédiée DS : cut-in
+        int after = fm == 9 ? 1 : fm == 10 ? 2 : fm == 11 ? 3 : 0;
+        if (!after) return false;                   // puis Téléport/Tunnel/DP
+        _cutin_slot = slot; _cutin_f = 0.f; _cutin_cry = false;
+        _cutin_sp = (slot >= 0 && slot < (int)_vm.party.size())
+            ? _vm.party[slot].species : 0;
+        _cutin_after = after;
+        return true;
+    }
+    _vm.set_var(0x8000, slot);                      // SCRIPT_DATA_PARAMETER_0
+    int o = _facing_obj();                          // RemoveObject VAR_LAST_TALKED
+    _vm.set_var(0x800D, o >= 0 ? _objects[o].id : 0);
+    _start_script(sid); _vm.step();
+    if (!_vm.busy()) _script_end_box();
+    return true;
+}
+const std::string& World::fm_error_text(int err) { // banque party_menu (453) DS
+    static std::string unk = "?";
+    static const int IDX[5] = {104, 104, 76, 196, 102};
+    auto& b = _bank_msgs(453);
+    int i = (err >= 0 && err <= 4) ? IDX[err] : 104;
+    return (i >= 0 && i < (int)b.size()) ? b[i] : unk;
 }
 void World::shop_buy(int idx) {                // achat -> argent + sac
     if (idx < 0 || idx >= (int)_vm.shop_items.size()) return;

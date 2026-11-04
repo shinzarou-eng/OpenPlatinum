@@ -38,8 +38,14 @@ static const std::unordered_map<int, const char*>& charmap() {
 
 static void glyph(int c, std::string& out) {
     auto it = charmap().find(c);
-    if (it != charmap().end()) out += it->second;
-    else { char b[8]; snprintf(b, 8, "<%04X>", c); out += b; }
+    if (it != charmap().end()) { out += it->second; return; }
+    if (c > 0 && c <= 0xFFFF) {          // glyphe DS hors table ASCII :
+        char32_t u = 0xF0000 + c;        // transporte le code via PUA-A
+        out += (char)(0xF0 | (u >> 18));
+        out += (char)(0x80 | ((u >> 12) & 0x3F));
+        out += (char)(0x80 | ((u >> 6) & 0x3F));
+        out += (char)(0x80 | (u & 0x3F));
+    }
 }
 
 static std::vector<int> unpack9(const std::vector<int>& chars, size_t start) {
@@ -114,6 +120,8 @@ int msg_next_utf8(const std::string& s, size_t& i) {
 }
 
 int msg_char_code_of(char32_t ch) {
+    if (ch >= 0xF0000 && ch <= 0xF0FFFF)         // glyphe DS transporté via PUA
+        return (int)(ch - 0xF0000);
     static std::unordered_map<char32_t, int> rev;
     if (rev.empty())
         for (auto& kv : charmap()) {           // garde le 1er code par car

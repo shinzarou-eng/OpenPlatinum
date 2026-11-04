@@ -369,7 +369,7 @@ Model parse_bmd(const Bytes& d) {
     out.bones = bones; out.invb = invb;
 
     // render commands : groupés par (matériau, nœud) pour pouvoir animer un nœud
-    struct G { int mat, node; M4 xf; std::vector<Prim> prims; };
+    struct G { int mat, node, shape; M4 xf; std::vector<Prim> prims; };
     std::unordered_map<int, G> groups;
     run_rc(d, rc_off, bones, invb, up_s, down_s,
         [&](int mat, int node, int mi, const M4& cur,
@@ -380,7 +380,7 @@ Model parse_bmd(const Bytes& d) {
             size_t cl = u32(d, mo2 + 12);
             auto pr = eval_mesh(slice(d, co, cl), cur, stack);
             auto& g = groups.try_emplace(group_key(mat, node),
-                G{mat, node, cur, {}}).first->second;
+                G{mat, node, mi, cur, {}}).first->second;
             g.prims.insert(g.prims.end(), pr.begin(), pr.end());
         });
 
@@ -388,6 +388,7 @@ Model parse_bmd(const Bytes& d) {
         MeshGroup mg;
         mg.mat = kv.second.mat;
         mg.node = kv.second.node;
+        mg.shape = kv.second.shape;
         mg.xf = kv.second.xf;
         if (mg.mat < (int)mat_objs.size() && mg.mat >= 0)
             mg.matdef = mat_objs[mg.mat];

@@ -241,6 +241,29 @@ void World::_tick_prop_anims(float dt) {
                 bones[ni] = bmd::bca_node(*p.anm, ni, (int)p.anm_frame,
                                           p.mdl->bones[ni]);
         p.anm_cur = bmd::replay_xf(*p.mdl, bones);
+        if (getenv("WARPDBG") && p.anm_idx >= 0) {
+            static std::unordered_set<int> hd;
+            if (hd.insert(p.model).second) {
+                printf("[propdbg] mdl=%d pos=%.0f,%.0f,%.0f ry=%.2f meshes=%zu bones=%zu\n",
+                    p.model, p.pos.x, p.pos.y, p.pos.z, p.ry,
+                    p.meshes.size(), p.mdl ? p.mdl->bones.size() : 0);
+                for (size_t bi = 0; p.mdl && bi < p.mdl->bones.size(); bi++)
+                    printf("[bone%zu] w=(%.1f,%.1f,%.1f)\n", bi,
+                        p.mdl->bones[bi].w.x, p.mdl->bones[bi].w.y,
+                        p.mdl->bones[bi].w.z);
+                for (size_t mi = 0; mi < p.mkey.size(); mi++)
+                    printf("[mkey%zu] key=%d\n", mi, p.mkey[mi]);
+            }
+            for (size_t mi = 0; mi < p.mkey.size(); mi++) {
+                auto it = p.anm_cur.find(p.mkey[mi]);
+                if (it == p.anm_cur.end()) continue;
+                M4 d = it->second.mul(p.minv[mi]);   // delta = anim × repos⁻¹
+                printf("[anmdlt] mdl=%d f=%.1f | %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f | w %.2f %.2f %.2f\n",
+                    p.model, p.anm_frame,
+                    d.x.x, d.x.y, d.x.z, d.y.x, d.y.y, d.y.z,
+                    d.z.x, d.z.y, d.z.z, d.w.x, d.w.y, d.w.z);
+            }
+        }
     }
 }
 
@@ -265,6 +288,33 @@ int World::_warp_at(int tx, int tz) const {
     for (size_t i = 0; i < _warps.size(); i++)
         if (_warps[i].x == tx && _warps[i].z == tz) return (int)i;
     return -1;
+}
+
+// FieldWarp_InitTeleport / InitDig DS : warp de CS (Téléportation / Tunnel) —
+// destination = point vol du respawn (Téléport) ou localisation de sortie
+// (Tunnel), anim = spin du panneau warp (sortie puis arrivée).
+void World::_fm_warp(bool teleport) {
+    _entrance = {_header, -1,
+        (int)floorf(_ppos.x / TILE), (int)floorf(_ppos.z / TILE), _pdir};
+    int bh = _blackout_id - 1;
+    if (bh < 0 || bh >= SPAWN_TBL_N) bh = 0;
+    const SpawnLoc& sl = SPAWN_TBL[bh];
+    _wt = WarpTask{};
+    _wt.dh = teleport ? sl.fly_hdr
+        : (_exit_map > 0 ? _exit_map : sl.fly_hdr);
+    _wt.dw = -1;                                    // destination = coords explicites
+    _wt.dx = teleport ? sl.fx : (_exit_map > 0 ? _exit_x : sl.fx);
+    _wt.dz = teleport ? sl.fz : (_exit_map > 0 ? _exit_z : sl.fz);
+    _wt.ddir = 0; _wt.adir = 0;                     // arrivée face sud (DS)
+    _wt.type = WT_PANEL;                            // spin DS (sortie + arrivée)
+    if (_pstate == 1) set_bike(false);              // DS : warp terrain = marche
+    _pstep = 0; _panim = 0.f;
+    if (_snd) _snd->se(1499);                       // SEQ_SE_PL_WARP
+    _wt.py = _ppos.y;
+    _wt.st = WP_DEP_PANEL;
+    if (getenv("WARPDBG"))
+        printf("[fmwarp] %s -> hdr%d (%d,%d)\n",
+            teleport ? "teleport" : "dig", _wt.dh, _wt.dx, _wt.dz);
 }
 
 // Field_MapConnection : mémorise la sortie (entrance) et résout la

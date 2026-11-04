@@ -393,7 +393,7 @@ ScriptVM::St ScriptVM::step() {
             set_var((int)_arg[0], rand() % (b > 0 ? b : 1)); break; }
         case 0x01BD:                                      // GetPlayerDir dest
             if (cb_pdir) set_var((int)_arg[0], cb_pdir()); break;
-        case 0x01CC: set_flag(2409, true); break;         // GiveJournal -> FLAG_JOURNAL_ACQUIRED
+        case 0x01CC: set_flag(2410, true); break;         // GiveJournal -> FLAG_JOURNAL_ACQUIRED
         case 0x022D:                                      // NatDex enable/check
             if ((int)_arg[0] == 1) set_flag(144, true);
             else set_var((int)_arg[1], flag(144) ? 1 : 0);
@@ -461,15 +461,17 @@ ScriptVM::St ScriptVM::step() {
             if (cb_follow) { cb_follow(4, 0, 0); } break;
         case 0x0162: set_flag(2407, false);               // ClearHasPartner
             if (cb_follow) { cb_follow(5, 0, 0); } break;
-        case 0x0163: set_var((int)_arg[0], flag(2411) ? 1 : 0); break; // CheckStepFlag
-        case 0x0164: set_flag(2411, true); break;         // SetStepFlag
-        case 0x0165: set_flag(2411, false); break;        // ClearStepFlag
-        case 0x0166: set_var((int)_arg[0], flag(2410) ? 1 : 0); break; // CheckGameCompleted
-        case 0x0167: set_flag(2410, true); break;         // SetGameCompleted
+        case 0x0163: set_var((int)_arg[0], flag(2412) ? 1 : 0); break; // CheckStepFlag
+        case 0x0164: set_flag(2412, true); break;         // SetStepFlag
+        case 0x0165: set_flag(2412, false); break;        // ClearStepFlag
+        case 0x0166: set_var((int)_arg[0], flag(2411) ? 1 : 0); break; // CheckGameCompleted
+        case 0x0167: set_flag(2411, true); break;         // SetGameCompleted
         // -- divers système --
         case 0x00C7: set_var((int)_arg[0], sys_bike ? 1 : 0); break; // CheckPlayerOnBike
-        case 0x00C8: sys_bike = _flex((int)_arg[0]) != 0; break;      // SetPlayerBike
-        case 0x00C9: if (cb_fld) cb_fld(2, _flex((int)_arg[0]), 0); break;  // ForceBicycling -> SetPlayerState
+        case 0x00C8: sys_bike = _flex((int)_arg[0]) != 0;            // SetPlayerBike
+            if (cb_fld) cb_fld(16, sys_bike ? 1 : 0, 0); break;
+        case 0x00C9: if (cb_fld) cb_fld(14, _flex((int)_arg[0]), 0); break; // ForceBicycling -> _bon_road
+        case 0x00CA: if (cb_fld) cb_fld(15, (int)_arg[0], 0); break; // GetPlayerState -> var
         case 0x011C: {                                  // GetFloorsAbove : table DS field_menu.c
             static const struct { int map, n; } F[] = {
                 {137,4},{138,3},{139,2},{140,1},{141,0},{566,5},
@@ -643,7 +645,7 @@ ScriptVM::St ScriptVM::step() {
             if (cb_fld) cb_fld(11, 0, 0);                   // -> _special
             break; }
         case 0x011D:                                      // ShowCurrentFloor x,y,floorVar
-            if (cb_fld) cb_fld(13, 0, var((int)_arg[2]));
+            if (cb_fld) cb_fld(13, (int)_arg[2], 0);        // a = index var fermeture
             break;
         case 0x0121: {                                    // GetNationalDexCaughtCount
             // DS : bit « pris » du dex — dex_caught suivi (captures/dons/
@@ -986,7 +988,9 @@ ScriptVM::St ScriptVM::step() {
         case 0x033B: menu_oy = _flex((int)_arg[0]); break; // SetMenuYOriginSide
         // ---- RTC/events objets divers ----
         case 0x0055: break;                             // FadeInBGM
-        case 0x00C5: break;                             // PlayHmCutIn
+        case 0x00C5: {                                  // PlayHmCutIn : arg = var
+            if (cb_hmcut) cb_hmcut(_flex((int)_arg[0]));// contenant le slot équipe
+            _st = HMCUT; break; }                       // pause jusqu'à fin anim
         case 0x0151: break;                             // FieldCommenterBattleRoom
         case 0x0270: set_flag(5000 + _flex((int)_arg[0]), // SetHiddenLocation
                               _arg[1] != 0); break;
@@ -1160,12 +1164,12 @@ ScriptVM::St ScriptVM::step() {
             set_var((int)_arg[1], 1);                   // DS : yield jusqu'à fin anim
             wait_t = 1; _st = WAITTIME; break; }
         case 0x01CF: case 0x01D0: case 0x01D1: {        // DoStrength/Flash/DefogFunc
-            // FIELD_MOVE_FUNC DS : SET=0 CLEAR=1 -> 0 arg, CHECK=2 -> dest ;
-            // flags STRENGTH_ACTIVE 2402 / FLASH_ACTIVE 2426 / DEFOG_ACTIVE 2427
-            static const int FMF[3] = {2402, 2426, 2427};
+            // FIELD_MOVE_FUNC DS : CLEAR=0 SET=1 -> 0 arg, CHECK=2 -> dest ;
+            // flags STRENGTH_ACTIVE 2409 / FLASH_ACTIVE 2433 / DEFOG_ACTIVE 2434
+            static const int FMF[3] = {2409, 2433, 2434};
             int fl = FMF[op - 0x01CF];
-            if (_arg[0] == 0) set_flag(fl, true);
-            else if (_arg[0] == 1) set_flag(fl, false);
+            if (_arg[0] == 1) set_flag(fl, true);
+            else if (_arg[0] == 0) set_flag(fl, false);
             else if (_arg[0] == 2) set_var((int)rh(), flag(fl) ? 1 : 0);
             break; }
         case 0x0235: {                                  // CallTVBroadcast (arité variable)
@@ -1265,6 +1269,7 @@ ScriptVM::St ScriptVM::step() {
         case 0x026C: set_var((int)_arg[0], 0); break;   // TryGetRandomMassageGirlAccessory
         case 0x027A: break;                             // UseVistaLighthouseBinoculars
         case 0x028F: set_var((int)_arg[0], hof_entries); break;  // GetLeagueVictories
+        case 0x02BF: if (cb_fld) cb_fld(17, 0, 0); break;   // SetCyclingBGM
         case 0x02BE: {                                  // GetTrainerCardLevel : nb étoiles DS
             int st = 0;
             if (badges == 8) st++;
@@ -1361,8 +1366,9 @@ ScriptVM::St ScriptVM::step() {
         case 0x025E: break;                             // InitLakeGuardianContainmentUnits
         case 0x0253: break;                             // SetClearInCatchingShowFlag
         case 0x02C5: case 0x02D5: case 0x02DC: break;   // DeleteActive*Streak
-        case 0x00BF: break;                             // UseRockClimb (anim nd)
+        case 0x00BF: if (cb_climb) cb_climb(); break;   // UseRockClimb -> escalade
         case 0x00C0: if (cb_surf) cb_surf(); break;     // UseSurf -> monter sur l'eau
+        case 0x00C1: if (cb_wfall) cb_wfall(); break;   // UseWaterfall -> cascade
         // parcelles à baies : l'objet cible du script donne le patchID (d0)
         case 0x017D: set_var((int)_arg[0], cb_berry ? cb_berry(0, 0) : 0); break; // GetBerryGrowthStage
         case 0x017E: set_var((int)_arg[0], cb_berry ? cb_berry(1, 0) : 0); break; // GetBerryItemID
@@ -1441,7 +1447,8 @@ ScriptVM::St ScriptVM::step() {
         }
         case 0x0341:                                      // BufferSpeciesNameWithArticle
             if (cb_buf) cb_buf((int)_arg[0], 91, _flex((int)_arg[1])); break;
-        case 0x00C3: break; case 0x00C4: break;         // Flash/Defog anims
+        case 0x00C3: case 0x00C4:                     // Flash/Defog -> weather CLEAR
+            if (cb_wclear) cb_wclear(); break;
         case 0x028C: break;                             // DrawPokemonPreviewFromPartySlot
         default:
             if (cb_unimpl) cb_unimpl(od->name, op);

@@ -228,19 +228,33 @@ void World::_load_grass() {
     load(89, 8, _vtall_meshes);     // très hautes herbes (beh 0x03)
 }
 
-// dessine la touffe à z_tuile+18 (DS : entre la caméra et les pieds du perso)
-void World::_grass_overlay(const Vec3& feet, int beh, const Mat4& mvp) {
+// dessine la touffe à z_tuile+18 (DS : entre la caméra et les pieds du perso) —
+// billboard caméra-facing comme le Billboard_Create de ov5_021F2D20.c ; un quad
+// plat vertical serait écrasé sur le sol par la caméra haute au lieu de couvrir
+// les pieds du perso.
+void World::_grass_overlay(const Vec3& feet, int beh, const Vec3& cam,
+    const Mat4& mvp) {
     const std::vector<GpuMesh>* ms =
         beh == 0x02 ? &_grass_meshes : beh == 0x03 ? &_vtall_meshes : nullptr;
     if (!ms || ms->empty()) return;
     float tx = floorf(feet.x / TILE), tz = floorf(feet.z / TILE);
-    Mat4 m = Mat4::ident();
-    m.m[12] = (tx + 0.5f) * TILE;
-    m.m[13] = feet.y - 0.5f;
-    m.m[14] = tz * TILE + 18.f;                  // centre tuile + 10 vers caméra
+    Vec3 at{(tx + 0.5f) * TILE, feet.y - 0.5f, tz * TILE + 18.f};
+    Vec3 to{cam.x - at.x, cam.y - at.y, cam.z - at.z};
+    float l = to.len();
+    to = l > 1e-3f ? to * (1.f / l) : Vec3{0, 0, 1};
+    Vec3 r{to.z, 0, -to.x};
+    float rl = r.len();
+    r = rl > 1e-3f ? r * (1.f / rl) : Vec3{1, 0, 0};
+    Vec3 u = to.cross(r);
+    Mat4 m;
+    m.m[0] = r.x;  m.m[1] = r.y;  m.m[2]  = r.z;
     // brise légère : cisaillement du haut de la touffe, déphasé par tuile
-    m.m[4] = sinf(_dbg_frames * 0.045f + (tx + tz) * 1.31f) * 0.11f
-           + sinf(_dbg_frames * 0.19f + tx * 2.7f) * 0.02f;   // vibrato fin
+    m.m[4] = u.x + sinf(_dbg_frames * 0.045f + (tx + tz) * 1.31f) * 0.11f
+                + sinf(_dbg_frames * 0.19f + tx * 2.7f) * 0.02f;
+    m.m[5] = u.y;  m.m[6]  = u.z;
+    m.m[8] = to.x; m.m[9] = to.y; m.m[10] = to.z;
+    m.m[12] = at.x; m.m[13] = at.y; m.m[14] = at.z;
+    m.m[3] = m.m[7] = m.m[11] = 0.f; m.m[15] = 1.f;
     for (auto& g : *ms) rnd::draw(g, mvp.mul(m));
 }
 
@@ -680,6 +694,15 @@ uint32_t World::_mm_tex(int gfx, int frame, const SkinTint& t) {
         ensure_skins();
         return _skinpng_tex(gfx - SKIN_BASE, frame, t);
     }
+    if (gfx == 150 && rskin >= SKIN_BASE) {    // BARRY -> skin du rival choisie
+        ensure_skins();
+        int i = rskin - SKIN_BASE;
+        uint32_t x = _skinpng_tex(i, frame, t);
+        if (!x && frame >= 16) x = _skinpng_tex(i, frame - 16, t);
+        if (!x && (frame & 3)) x = _skinpng_tex(i, frame & ~3, t);
+        if (!x) x = _skinpng_tex(i, 0, t);
+        if (x) return x;
+    }
     return _mm_member_tex(mm_member_of(this, gfx), frame, t);
 }
 
@@ -742,6 +765,31 @@ uint32_t World::_skinpng_tex(int i, int frame, const SkinTint& t) {
                 tex = rnd::upload_tex_nearest(cp);
             }
         }
+    }
+    inner[tk] = tex;
+    return tex;
+}
+
+// sheet vélo dédiée d'une skin perso : skins/bike/<nom>.png, 24 frames 32×32
+// dans l'ordre pl_cyclehero — utilisée telle quelle. 0 si absente (le caller
+// retombe alors sur le sprite vélo DS officiel).
+uint32_t World::_bike_skin_tex(int i, int pf, int bikeFrame) {
+    SkinTint t = _tint();
+    int mk = i * 2048 + (pf & 63) * 32 + (bikeFrame & 31);
+    uint64_t tk = t.identity() ? 0
+        : (uint64_t)t.mask | ((uint64_t)(t.hue & 0x1FF) << 32)
+        | ((uint64_t)(t.sat & 0xFF) << 41) | ((uint64_t)(t.val & 0xFF) << 49);
+    auto& inner = _bskcache[mk];
+    auto it = inner.find(tk);
+    if (it != inner.end()) return it->second;
+    uint32_t tex = 0;
+    ensure_skins();
+    if (i >= 0 && i < (int)_skins.size() &&
+        bikeFrame >= 0 && bikeFrame < (int)_skins[i].bike.size() &&
+        _skins[i].bike[bikeFrame]) {
+        Image cp = *_skins[i].bike[bikeFrame];
+        if (!t.identity()) tint_apply(&cp, t);
+        tex = rnd::upload_tex_nearest(cp);
     }
     inner[tk] = tex;
     return tex;
@@ -1443,7 +1491,17 @@ void World::draw(const Mat4& proj, int sw, int sh) {
     }
     if (!_alt.empty()) rnd::set_light(&Ls);       // props/persos : lampe globale
     for (auto& p : _props) {
-        if (p.hidden) continue;                  // MapProp_SetHidden DS
+        if (p.hidden || getenv("NOPROPS")) continue; // MapProp_SetHidden DS
+        if (getenv("NODOOR") && (p.model == 67 || p.model == atoi(getenv("NODOOR")))) continue;
+        if (getenv("ONLYMDL") && p.model != atoi(getenv("ONLYMDL"))) continue;
+        static bool pl = getenv("PROPLIST") != nullptr;
+        if (pl && p.pos.x > 1840 && p.pos.x < 1900 && p.pos.z > 14140) {
+            pl = false;
+            for (auto& q : _props)
+                if (q.pos.x > 1840 && q.pos.x < 1900 && q.pos.z > 14140 && q.pos.z < 14200)
+                    printf("[pnear] mdl=%d pos=%.0f,%.0f,%.0f meshes=%zu hid=%d\n",
+                        q.model, q.pos.x, q.pos.y, q.pos.z, q.meshes.size(), (int)q.hidden);
+        }
         Mat4 cell = _prop_mat(p);
         Mat4 cm = mvp.mul(cell);
         bool anim = !p.anm_cur.empty();        // porte animée : delta par nœud
@@ -1621,7 +1679,7 @@ void World::draw(const Mat4& proj, int sw, int sh) {
             _draw_billboard(bbq, _mm_tex(g, fr),
                 {p.x, p.y + 1.f - sink_y(ob), p.z}, cam, mvp, grass_pull(ob));
         if (ob == 0x02 || ob == 0x03)
-            _grass_overlay({p.x, p.y - sink_y(ob), p.z}, ob, mvp);
+            _grass_overlay({p.x, p.y - sink_y(ob), p.z}, ob, cam, mvp);
         if (_objemote.count((int)i))                  // bulle "!" au-dessus
             _draw_billboard(_emote_bb, _emote_tex,
                 {p.x, p.y + 31.f, p.z}, cam, mvp, 10.f);
@@ -1643,13 +1701,39 @@ void World::draw(const Mat4& proj, int sw, int sh) {
             : 0.f;
         int pf = W2R[fdir & 3] * 4 + (_panim > 0.f ? 1 + ((int)_panim % 2) : 0);
         if (_can_run && run_held && !_psurf) pf += 16;     // section course
+        // vélo : pl_cyclehero M=92/F=93 — bike.bin mappe 4 textures par
+        // direction (N 0-3, S 4-7, O 8-11, E 12-15) : base dir + pédalage 0-3
+        // en mouvement ; au repos les anims "coast" DS {4,5,6,7} donnent les
+        // textures 16,18 (N,S bouclées) et 20,21 (O,E fixes). Skin perso :
+        // composite skin + vélo DS.
+        static const int BIKE_IDLE[4] = {16, 18, 20, 21};
+        int bf = _panim > 0.f ? W2R[fdir & 3] * 4 + (int)_panim % 4
+                            : BIKE_IDLE[W2R[fdir & 3]];
+        // skin perso à vélo : sheet dédiée skins/bike/<nom>.png si elle existe,
+        // sinon sprite DS officiel (Lucas/Aurore — la ROM n'a que ceux-là).
+        uint32_t bsk = 0;
+        if (!_psurf && _pstate == 1 && skin >= 0)
+            bsk = _bike_skin_tex(skin - SKIN_BASE,
+                    _panim > 0.f ? pf | 16 : pf, bf);
         uint32_t pt = _psurf
             ? _mm_member_tex(_gender == 1 ? 160 : 159, pf >> 2, _tint())
-            : (skin >= 0 ? _skin_tex(pf) : _mm_tex(0, pf, _tint()));
-        if (objdbg) printf("[pdraw] ppos=%.0f,%.0f,%.0f dir=%d fr=%d tex=%u\n",
-            _ppos.x, _ppos.y, _ppos.z, _pdir, pf, pt);
+            : _pstate == 1
+                ? (bsk ? bsk
+                       : _mm_member_tex(_gender == 1 ? 93 : 92, bf, _tint()))
+                : (skin >= 0 ? _skin_tex(pf) : _mm_tex(0, pf, _tint()));
         int pb = _tile_beh((int)floorf(_ppos.x / TILE),
             (int)floorf(_ppos.z / TILE));
+        if (objdbg) printf("[pdraw] ppos=%.0f,%.0f,%.0f dir=%d fr=%d tex=%u pb=%d\n",
+            _ppos.x, _ppos.y, _ppos.z, _pdir, pf, pt, pb);
+        // SPRITEDBG : trace la résolution du sprite joueur à chaque changement
+        // (pf/bf/pt/état) — utile pour les soucis de frame/texture du rendu.
+        static int sprdbg = getenv("SPRITEDBG") ? 1 : 0;
+        static uint32_t last_pt = 0; static int last_pf = -1;
+        if (sprdbg && (pt != last_pt || pf != last_pf)) {
+            printf("[spritedbg] pf=%d bf=%d pt=%u pstate=%d skin=%d surf=%d panim=%.1f\n",
+                   pf, bf, pt, _pstate, skin, _psurf, _panim);
+            last_pt = pt; last_pf = pf;
+        }
         if (!indoor && sdir.y > 0.12f) {
             float gy = _ground_y(_ppos, _ppos.y + 20.f);
             _sprite_shadow(_bb, pt,
@@ -1660,7 +1744,7 @@ void World::draw(const Mat4& proj, int sw, int sh) {
             {_ppos.x, _ppos.y + 1.f - sink_y(pb), _ppos.z}, cam, mvp,
             grass_pull(pb), prl);
         if (pb == 0x02 || pb == 0x03)
-            _grass_overlay({_ppos.x, _ppos.y - sink_y(pb), _ppos.z}, pb, mvp);
+            _grass_overlay({_ppos.x, _ppos.y - sink_y(pb), _ppos.z}, pb, cam, mvp);
         if (_objemote.count(0xFF))
             _draw_billboard(_emote_bb, _emote_tex,
                 {_ppos.x, _ppos.y + 31.f, _ppos.z}, cam, mvp, 10.f);
@@ -1703,7 +1787,7 @@ void World::draw(const Mat4& proj, int sw, int sh) {
                 {fp.x, fp.y + 1.f - sink_y(fb2), fp.z}, cam, mvp,
                 grass_pull(fb2));
             if (fb2 == 0x02 || fb2 == 0x03)
-                _grass_overlay({fp.x, fp.y - sink_y(fb2), fp.z}, fb2, mvp);
+                _grass_overlay({fp.x, fp.y - sink_y(fb2), fp.z}, fb2, cam, mvp);
             if (_pfemote > 0.f)
                 _draw_billboard(_heart_bb, _heart_tex,
                     {fp.x, fp.y + fs->fh * 0.75f + 8.f, fp.z}, cam, mvp, 10.f);
@@ -1858,6 +1942,25 @@ void World::draw(const Mat4& proj, int sw, int sh) {
         pf.time = _wthr.t;
         pf.wet = indoor ? 0.f : _wthr.wet;
         rnd::set_post(&pf);
+    }
+    // grotte sombre DS : météo 16 (DARK_FLASH) ou 29 -> tout noir sauf
+    // un halo autour du joueur ; Flash efface la météo -> halo plein.
+    // Hors bloc cinéma : l'effet s'applique aussi en mode DS.
+    {   int wt = _wthr.type;
+        if ((wt == 16 || wt == 29) && _wthr.intensity > 0.01f) {
+            Vec3 pp{_ppos.x, _ppos.y + 10.f, _ppos.z};   // buste du perso
+            float cw3 = mvp.m[3] * pp.x + mvp.m[7] * pp.y
+                      + mvp.m[11] * pp.z + mvp.m[15];
+            if (cw3 > 0.f)
+                rnd::set_dark(
+                    (mvp.m[0] * pp.x + mvp.m[4] * pp.y
+                   + mvp.m[8] * pp.z + mvp.m[12]) / cw3 * .5f + .5f,
+                    1.f - ((mvp.m[1] * pp.x + mvp.m[5] * pp.y
+                   + mvp.m[9] * pp.z + mvp.m[13]) / cw3 * .5f + .5f),
+                    0.9f * _wthr.intensity,
+                    wt == 16 ? 0.17f : 0.24f);          // Revêche plus noir
+            else rnd::set_dark(-10.f, -10.f, 0.f, 0.3f);
+        } else rnd::set_dark(-10.f, -10.f, 0.f, 0.3f);
     }
     rnd::composite(sw, sh);                   // edge marking -> écran/MSAA
 }

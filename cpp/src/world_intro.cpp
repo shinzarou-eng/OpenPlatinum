@@ -6,6 +6,7 @@
 #include <map>
 #include <vector>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -46,6 +47,17 @@ std::shared_ptr<Image> portrait_img(Narc& n, int ci, int pi, int frame) {
     if (pals.empty()) return nullptr;
     // portraits intro : une frame = 8x16 tuiles (64x128)
     return spr::compose(g, frame * 128, 8, 16, pals[0]);
+}
+
+std::shared_ptr<Image> file_img(const std::string& p) {
+    int w, h;
+    unsigned char* d = stbi_load(p.c_str(), &w, &h, nullptr, 4);
+    if (!d) return nullptr;
+    auto im = std::make_shared<Image>();
+    im->create(w, h);
+    memcpy(im->px.data(), d, (size_t)w * h * 4);
+    stbi_image_free(d);
+    return im;
 }
 
 uint32_t put(int id, const std::shared_ptr<Image>& im) {
@@ -91,7 +103,16 @@ uint32_t World::intro_tex(int id) {
         if (n) switch (id) {
         case 2:  t = put(id, nscr_img(*n, 30, 24, 27)); break;  // dégradé bleu
         case 3:  t = put(id, nscr_img(*n, 31, 24, 27)); break;  // balle
-        case 4:  t = put(id, portrait_img(*n, 19, 20, _intro_frame)); break;
+        case 4: {                                         // Sorbier
+            // portrait HD prioritaire : skins/intro/Sorbier.png
+            auto hd = file_img(_skindir + "/intro/Sorbier.png");
+            if (hd) {
+                g_texsz[id] = {hd->w, hd->h};
+                t = g_tex[id] = rnd::upload_tex(*hd);   // lissé (pas pix.)
+            } else
+                t = put(id, portrait_img(*n, 19, 20, _intro_frame));
+            break;
+        }
         case 5:  t = put(id, portrait_img(*n, 9 + _intro_pframe, 13, 0));  break; // Lucas
         case 6:  t = put(id, portrait_img(*n, 14 + _intro_pframe, 18, 0)); break;// Dawn
         case 7:  t = put(id, portrait_img(*n, 21, 22, 0)); break;// René

@@ -97,6 +97,7 @@ public:
     void set_pos(float x, float z);          // téléport + stream + sol
     void set_y(float y) { _ppos.y = y; }     // debug : force la hauteur
     void set_dir(int d) { _pdir = d; }       // dir monde : 0=S 1=N 2=O 3=E
+    void set_surf(bool s) { _psurf = s; }        // debug : spawn en surf
     void set_special(int h) { _special.hdr = h; }  // debug : SpecialLocation
     int cell_count() const { return (int)_cells.size(); }
     int warp_count() const { return (int)_warps.size(); }
@@ -168,6 +169,17 @@ public:
         else default_moves(_db, sp, lv, pm.moves, &pm.nmoves);
         for (int k = 0; k < pm.nmoves; k++)
             pm.pp[k] = battle_move(_db, pm.moves[k]).pp;
+        _vm.party.push_back(pm); }
+    void debug_mon_moves(int sp, int lv, const int* mvs, int nm) { // test : moveset libre
+        ScriptVM::PartyMon pm; pm.species = sp; pm.level = lv;
+        auto bm0 = battle_make(_db, sp, lv);
+        pm.ivs = bm0.ivs; pm.pid = bm0.pid; pm.exp = bm0.exp;
+        pm.hp = bm0.maxhp;
+        pm.nmoves = std::min(4, nm);
+        for (int k = 0; k < pm.nmoves; k++) {
+            pm.moves[k] = mvs[k];
+            pm.pp[k] = battle_move(_db, mvs[k]).pp;
+        }
         _vm.party.push_back(pm); }
     const std::string& species_name(int id); // nom FR (banque 412)
     const std::vector<ScriptVM::PartyMon>& party() const { return _vm.party; }
@@ -248,8 +260,12 @@ public:
     uint32_t battle_plat_tex(int ter, int side);         // plateforme terrain (pl_batt_obj)
     void battle_plat_size(int ter, int side, int* w, int* h);
     uint32_t trainer_back_tex(int idx);                  // dos dresseur (trbgra)
+    uint32_t hero_back_tex(int g);                       // dos héros par défaut (PLAYER_M/F.png ou trbgra)
+    uint32_t skin_front_tex(int i);                      // face d'une skin perso i (0 si absent)
+    uint32_t hero_front_tex(int g);                      // face héros par défaut (front/PLAYER_M-F.png ou trfgra)
     uint32_t trainer_front_tex(int idx);                 // face dresseur (trfgra)
     uint32_t player_back_tex();                          // dos du joueur : sprite skin ou héros par genre
+    uint32_t player_front_tex();                         // face du joueur : sprite skin ou héros par genre
     uint32_t skin_back_tex(int i);                       // dos d'une skin perso i (0 si absent)
     std::vector<int> _bag_seq;                           // ordre d'obtention
     int _reg_item = 0;
@@ -332,6 +348,7 @@ public:
     void set_bgm_override(int s) { _bgm_override = s; }   // musique forcée (-1 auto)
     int  bgm_override() const { return _bgm_override; }
     int  skin = -1;                        // apparence joueur : -1 héros/héroïne, sinon gfx PNJ
+    int  rskin = -1;                       // apparence rival : -1 Barry ROM, sinon SKIN_BASE+i
     int  skin_hue = 0;                     // teinte 0..359° (0 = neutre)
     int  skin_sat = 100;                   // saturation % (100 = neutre)
     int  skin_val = 100;                   // luminosité % (100 = neutre)
@@ -353,6 +370,7 @@ public:
     struct SkinSheet {
         std::string name;
         std::vector<std::shared_ptr<Image>> frames;   // jusqu'à 32 (trous ok)
+        std::vector<std::shared_ptr<Image>> bike;     // skins/bike/<nom>.png : 24 (trous ok)
     };
     void scan_skins(const std::string& dir);  // charge/recharge les PNG
     const SkinSheet* skin_custom(int i) const;
@@ -382,7 +400,31 @@ public:
     int  enc_rate() const { return _enc_rate; }
     int  enc_slot(int i, int* lv) const;    // espèce du slot (-1)
     bool surfing() const { return _psurf; }
+    bool biking() const { return _pstate == 1; }    // PLAYER_AVATAR_CYCLING
+    int  pstate() const { return _pstate; }
+    void set_bike(bool on);                         // monter/descendre (sys_bike+état)
+    int  use_bicycle();    // objet 450 : 0 monté 1 descendu 2 interdit 3 démontage interdit
+    void bike_gear();      // B : bascule 3e/4e vitesse (DS TryCyclingGearChange)
     bool battle_active() const { return _wild_t > 0.f || _btl.active; }
+    // cut-in CS (PlayHmCutIn DS) : -1 inactif, sinon frame 60fps + espèce
+    float cutin_t() const { return _cutin_slot < 0 ? -1.f : _cutin_f; }
+    int   cutin_sp() const { return _cutin_sp; }
+    int   cutin_slot() const { return _cutin_slot; }
+    // ── CS de terrain (FieldMoveTasks DS : menu équipe) ──────────────
+    // fm = index DS FIELD_MOVE_* (0 Coupe..14) ; seules les CS à script
+    // (Coupe/Éclate-Roc/Force/Escalade/Surf/Cascade/Anti-Brume/Flash)
+    // sont lançables pour l'instant.
+    std::vector<int> party_field_moves(int slot) const; // CS connues (ordre att.)
+    int  usable_field_moves() const;                    // bitmask utilisable ici
+    int  field_move_error(int fm) const;                // 0/1 lieu/2 badge/3 partn/4 état
+    int  field_move_script(int fm) const;               // script 10008+ ou -1
+    bool field_move_runnable(int fm) const {            // script ou tâche dédiée
+        return field_move_script(fm) >= 0 ||
+               (fm >= 9 && fm <= 11);                   // Téléport/Tunnel/Dolce-Parfum
+    }
+    int  field_move_id(int fm) const;                   // id attaque du fm
+    bool use_field_move(int slot, int fm);              // lance la CS (menu)
+    const std::string& fm_error_text(int err);          // message DS (banque 453)
     // snapshot complet (vars/flags/équipe/pos/états objets) -> rejouer une scène
     struct DbgState {
         int hdr = -1; Vec3 pos; int dir = 0;
@@ -451,6 +493,7 @@ private:
     int _header = -1;
     std::string _label, _mapname;
     std::string _floor_txt;                              // ShowCurrentFloor (0x11D)
+    int _floor_var = -1;                                 // var qui ferme la fenêtre à 0xFFFF
     float _banner_t = 0.f;
     int _mus_day = -1, _mus_night = -1;     // seq SDAT de zone (arm9 MapHeader)
     int _cam_type = -1;                     // type caméra (0..16, 4 = ortho int.)
@@ -495,9 +538,14 @@ private:
     std::vector<GpuMesh> _grass_meshes, _vtall_meshes;      // tall_grass fldeff 83/89
     void _load_shadow();
     void _load_grass();
-    void _grass_overlay(const Vec3& feet, int beh, const Mat4& mvp);
+    void _grass_overlay(const Vec3& feet, int beh, const Vec3& cam, const Mat4& mvp);
     std::unordered_map<std::string, bmd::TexEnt> _texset;
     std::unordered_map<std::string, bmd::TexEnt> _ptexset; // areabm_texset (props)
+    // build_model_matshp.dat : par modèle, paires (matériau, shape) dessinées
+    // sans transform de nœud (NNS_G3dDraw1Mat1Shp sous la base du prop)
+    std::unordered_map<int, std::vector<std::pair<int, int>>> _matshp;
+    bool _matshp_loaded = false;
+    const std::vector<std::pair<int, int>>* _matshp_pairs(int model);
     // cache texture GL : clé = adresse de l'Image ; le shared_ptr gardé vivant
     // évite qu'une adresse libérée soit réutilisée (collisions de textures !)
     std::unordered_map<const void*, std::pair<std::shared_ptr<Image>, uint32_t>> _texcache;
@@ -718,6 +766,10 @@ private:
     }
     std::unordered_set<int> _objpersist;    // index SetObjectFlagIsPersistent
     int _pstate = 0, _pstate_pending = 0;   // état avatar (SetPlayerState)
+    int _bgear = 0, _bspd = 0;              // vélo : vitesse DS (0=3e/1=4e) + palier 0-3
+    bool _bbrake = false;                   // roue libre engagée (speed>=2, DS BIKE_BRAKE)
+    bool _bon_road = false;                 // ForceBicycling : piste cyclable (AVATAR_MOVE_ON_CYCLING_ROAD)
+    int _bslope = 0;                        // pente boue : 1=glissière sud, 2=descente forcée
     int _cam_mode = 0; float _cam_x = 0, _cam_z = 0;  // 0=joueur 1=libre 2=objet
     float _cam_ox = 0, _cam_oy = 0, _cam_oz = 0;      // 3=offset joueur (MoveCamera)
     std::unordered_map<int,int> _seqvol;    // volumes initiaux par séquence
@@ -752,6 +804,7 @@ private:
     void _tick_wander(float dt);
     bool _check_trainer_sight();             // un dresseur voit le joueur ?
     bool _obj_at_tile(int tx, int tz, float y, int exclude) const;
+    int  _facing_obj() const;               // sub_0203C9D4 DS (comptoir compris)
     void _try_wild(int tb);                  // WildEncounters_TryWildEncounter
     void _swarm_map_species(int* map, int* sp) const;  // essaim du jour
     bool _wild_force = false;                // tuto capture : force la rencontre
@@ -1433,7 +1486,7 @@ private:
     }
 
     // Poussée Force (ov5_021DFF1C DS) + chutes de rochers du Monde
-    // Distorsion (DistWorldFallingBoulder_* DS / boulders.ts OpenSinnoh).
+    // Distorsion (DistWorldFallingBoulder_* DS).
     struct BoulderPush {
         int obj = -1;               // index _objects du rocher (-1 = off)
         int dir = 0;                // dir monde de la poussée
@@ -1491,6 +1544,25 @@ private:
     float _pty = 0;                             // cible y du pas (murs Distorsion)
     float _movdbg_t = 0;                        // debug dérive joueur
     float _pstep_spd = 0;                       // vitesse du pas (px/s)
+    // tâches CS terrain (FieldTask_InitCall DS : la VM finit, la tâche
+    // pilote _ppos/_pstep dans le tick ; input gelé tant que _phm != 0).
+    // escalade : 1=saut sur la paroi 2=marche auto 3=saut de sortie ;
+    // cascade : 4/5 = montée (y puis y+z), 6/7 = descente (z puis y+z).
+    int   _phm = 0;
+    float _phm_t = 0;                           // frames DS écoulées (cascade)
+    Vec3  _phm_d{}, _phm_to{};                  // delta/frame + cible (cascade)
+    void _climb_next();                         // escalade : enchaîne le mouvement
+    void _wfall_start(bool up);                 // cascade : init montée/descente
+    // cut-in CS (HMCutIn_StartTask DS) : slot équipe, espèce résolue, temps
+    // en frames (60fps), cri joué. -1 = inactif. Dessiné par main.cpp.
+    int   _cutin_slot = -1, _cutin_sp = 0;
+    float _cutin_f = 0.f;
+    bool  _cutin_cry = false;
+    // tâche dédiée lancée après le cut-in (CS sans script DS) :
+    // 1 = Téléportation, 2 = Tunnel, 3 = Dolce-Parfum
+    int   _cutin_after = 0;
+    void _fm_warp(bool teleport);               // FieldWarp Dig/Teleport DS
+    void _sweet_scent();                        // rencontre sauvage forcée
     GpuMesh _pbox, _npcbox, _npcbox2, _bb, _bb16, _btree_bb;
     // membre*64+frame -> (tint_key -> tex GL) : textures overworld mises
     // en cache par variante de recoloration
@@ -1499,6 +1571,7 @@ private:
     std::vector<SkinSheet> _skins;             // feuilles PNG chargées
     bool _skins_scanned = false;
     std::unordered_map<int, std::unordered_map<uint64_t, uint32_t>> _skcache;
+    std::unordered_map<int, std::unordered_map<uint64_t, uint32_t>> _bskcache; // composites skin+vélo
     uint32_t _skinpng_tex(int i, int frame, const SkinTint& t);
     std::unordered_map<int, std::vector<RGBAf>> _palcache;   // slots palette
 
@@ -1526,6 +1599,7 @@ private:
         return {skin_hue, skin_sat, skin_val, skin_mask};
     }
     uint32_t _skin_tex(int pf);                  // skin PNJ : frames de repli
+    uint32_t _bike_skin_tex(int i, int pf, int bikeFrame); // skin + vélo DS dessous
     static bool _surfable(int beh);             // TILE_BEHAVIOR_FLAG_SURFABLE
     bool _mon_learns_hm(const ScriptVM::PartyMon& m, int hm) const; // compat CS
     bool _party_can_surf() const;               // un Pokémon sait/peut Surf

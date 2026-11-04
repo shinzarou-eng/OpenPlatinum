@@ -226,29 +226,49 @@ static float pop_snap(float t) {
     return 1.f + u*u*u*(1.2f*1.2f - 0.9f*0.9f + 1.f)*0.f
          + (1.f - powf(1.f - t, 3.f)) * (1.f + 0.45f * u * u);
 }
+// glyphes DS transportés via PUA-A -> approximation lisible dans les fontes
+// ImGui (0x1A5 = ligature « er », 0x1DF = « e » — ordinaux étages FR)
+static std::string pua_norm(const std::string& s) {
+    if (s.find('\xF3') == std::string::npos) return s;
+    std::string o; o.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); ) {
+        size_t b0 = i;
+        int cp = msg_next_utf8(s, i);
+        if (cp >= 0xF0000 && cp <= 0xF0FFFF) {
+            int c = cp - 0xF0000;
+            if (c == 0x1A5) o += "er";
+            else if (c == 0x1DF) o += "e";
+            continue;
+        }
+        o += s.substr(b0, i - b0);
+    }
+    return o;
+}
 // texte Dela / Rubik + ombre dure optionnelle + contour optionnel
 static float pop_txt(ImDrawList* dl, ImFont* f, float px, ImVec2 pos,
                      ImU32 col, const std::string& s, ImU32 shadow = 0,
                      float shx = 0, float shy = 0) {
+    const std::string t = pua_norm(s);
     if (shadow && (shx || shy))
-        dl->AddText(f, px, {pos.x + shx, pos.y + shy}, shadow, s.c_str());
-    dl->AddText(f, px, pos, col, s.c_str());
-    return f->CalcTextSizeA(px, 1e30f, 0, s.c_str()).x;
+        dl->AddText(f, px, {pos.x + shx, pos.y + shy}, shadow, t.c_str());
+    dl->AddText(f, px, pos, col, t.c_str());
+    return f->CalcTextSizeA(px, 1e30f, 0, t.c_str()).x;
 }
 static float pop_tw(ImFont* f, float px, const std::string& s) {
-    return f->CalcTextSizeA(px, 1e30f, 0, s.c_str()).x;
+    return f->CalcTextSizeA(px, 1e30f, 0, pua_norm(s).c_str()).x;
 }
 // texte à contour (8 directions)
 // texte à contour : outline d'ABORD (8 directions), couleur différente, <=3u,
 // puis remplissage plein par-dessus
 static void pop_txtout(ImDrawList* dl, ImFont* f, float px, ImVec2 pos,
                        ImU32 col, ImU32 outc, float outw, const std::string& s) {
+    const std::string t = pua_norm(s);
     if (outw > 0) {
         static const int D[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{-1,1},{1,-1},{-1,-1}};
         for (auto& d : D)
-            dl->AddText(f, px, {pos.x + d[0]*outw, pos.y + d[1]*outw}, outc, s.c_str());
+            dl->AddText(f, px, {pos.x + d[0]*outw, pos.y + d[1]*outw}, outc, t.c_str());
     }
-    dl->AddText(f, px, pos, col, s.c_str());
+    dl->AddText(f, px, pos, col, t.c_str());
 }
 // chiffres en contour : bord encre + intérieur = couleur du fond (creux)
 static void pop_txthollow(ImDrawList* dl, ImFont* f, float px, ImVec2 pos,
@@ -582,9 +602,9 @@ static void pop_pet(ImDrawList* dl, uint32_t tx, ImVec2 feet, float h,
         {0,0},{1,1}, IM_COL32(255, 255, 255, 255));
 }
 static void pop_sprite(ImDrawList* dl, uint32_t tex, ImVec2 c, float w, float h,
-                       float u) {
+                       float u, bool sticker = true) {
     float o = 5.f * u;
-    if (GLuint sil = pop_sil_tex((GLuint)tex)) {
+    if (GLuint sil = sticker ? pop_sil_tex((GLuint)tex) : 0) {
         // ombre dure décalée : silhouette teintée encre (solide)
         dl->AddImage((ImTextureID)(uintptr_t)sil,
             {c.x - w/2 + 9.f*u, c.y - h/2 + 9.f*u},
@@ -1872,6 +1892,7 @@ static float ds_text(ImDrawList* dl, const std::string& s, float x, float y,
                      int ci, float scale) {
     if (g_theme_eff) {
         // thème : police système lisse — grande instance si dispo (Fonts[1] 64px)
+        const std::string t = pua_norm(s);        // glyphes DS -> texte lisible
         auto& fl = *ImGui::GetIO().Fonts;
         ImFont* f = fl.Fonts.Size > 1 ? fl.Fonts[1] : fl.Fonts[0];
         float ch = g_dfont.cellH > 0 ? (float)g_dfont.cellH : 16.f;
@@ -1880,10 +1901,10 @@ static float ds_text(ImDrawList* dl, const std::string& s, float x, float y,
         // ombre douce : halo léger autour + décalage bas-droite
         ImU32 halo = (sh & 0x00FFFFFFu) | (((sh >> 24) / 3) << 24);
         for (auto o : {ImVec2(1, 0), ImVec2(-1, 0), ImVec2(0, 1), ImVec2(0, -1)})
-            dl->AddText(f, px, {x + o.x, y + o.y}, halo, s.c_str());
-        dl->AddText(f, px, {x + px * 0.045f, y + px * 0.05f}, sh, s.c_str());
-        dl->AddText(f, px, {x, y}, ui_theme()->fg[ci & 7], s.c_str());
-        return f->CalcTextSizeA(px, 1e30f, 0, s.c_str()).x;
+            dl->AddText(f, px, {x + o.x, y + o.y}, halo, t.c_str());
+        dl->AddText(f, px, {x + px * 0.045f, y + px * 0.05f}, sh, t.c_str());
+        dl->AddText(f, px, {x, y}, ui_theme()->fg[ci & 7], t.c_str());
+        return f->CalcTextSizeA(px, 1e30f, 0, t.c_str()).x;
     }
     if (!g_dfont.nglyphs) { dl->AddText({x, y}, ui_theme()->fg[ci & 7], s.c_str()); return 0; }
     GLuint at = ds_font_tex(ci);
@@ -1923,7 +1944,7 @@ static float ds_text_w(const std::string& s, float scale) {
         ImFont* f = fl.Fonts.Size > 1 ? fl.Fonts[1] : fl.Fonts[0];
         float ch = g_dfont.cellH > 0 ? (float)g_dfont.cellH : 16.f;
         float px = std::max(8.f, ch * scale * 0.82f);
-        return f->CalcTextSizeA(px, 1e30f, 0, s.c_str()).x;
+        return f->CalcTextSizeA(px, 1e30f, 0, pua_norm(s).c_str()).x;
     }
     float w = 0;
     for (size_t k = 0; k < s.size(); ) {
@@ -1944,7 +1965,7 @@ static inline ImVec2 dp(float x, float y) {
 }
 // plateau DS 256x192 : unité = hauteur pleine × ÉCHELLE UI (option),
 // centrée horizontalement ; bottom = collée en bas (boîtes de dialogue
-// posées sur le monde), sinon centrée verticalement comme OpenSinnoh.
+// posées sur le monde), sinon centrée verticalement.
 static inline void ds_board(float sw, float sh, bool bottom = false) {
     int s = g_opts.ui_scale;
     if (s < 50) s = 50; if (s > 100) s = 100;
@@ -2399,7 +2420,7 @@ static DexOrder& dex_order(Nds& db) {
         [&](int x, int y) { return o.reg[x] < o.reg[y]; });
     return o;
 }
-// liste courante : régional ou national (dexList d'OpenSinnoh)
+// liste courante : régional ou national
 static const std::vector<int>& dex_list_for(Nds& db, int mode) {
     static std::vector<int> nat;
     if (mode == 0 && !dex_order(db).sinnoh.empty())
@@ -2429,8 +2450,8 @@ static PstArt& pst_art(Nds& db) {
     static const int PG[4] = {3, 4, 5, 6};           // info/memo/skills/moves
     for (int i = 0; i < 4; i++)
         if (auto im = spr::render_screen(pn->member(PG[i]), g, p)) {
-            // pages 256x256 : la partie visible est le haut (OpenSinnoh
-            // crop(0,0,256,192), fond rempli de la couleur 0)
+            // pages 256x256 : la partie visible est le haut
+            // (crop(0,0,256,192), fond rempli de la couleur 0)
             Image cr; cr.create(256, 192);
             RGBAf c0 = p.empty() || p[0].empty()
                 ? RGBAf{0,0,0,255} : p[0][0];
@@ -2588,7 +2609,7 @@ static void zone_audit(World& world) {
     q.push_back({ptx, ptz});
     if (world.tile_blocked(ptx, ptz))
         printf("[audit] joueur sur tuile BLOQUÉE (%d,%d)\n", ptx, ptz);
-    // 2e passe (méthode OpenSinnoh) : le joueur peut aussi ARRIVER sur
+    // 2e passe : le joueur peut aussi ARRIVER sur
     // chaque tuile de warp (porte, escalier, trou) — on graine le fill
     // depuis les voisins libres de chaque warp, même scellé dans un mur.
     for (auto& w : world.warps())
@@ -4278,6 +4299,8 @@ int main(int argc, char** argv) {
     int iskin = 0, iskin_top = 0;           // choix d'apparence : curseur/scroll
     int iskin_edit = 0;                     // 0 grille, 1 édit. couleur, 2 créateur
     int iskin_back = 0;                     // 1 = aperçu dos de combat dans le panneau
+    int iskin_rmode = 0;                    // 1 = la grille choisit la skin du rival
+    int iskin_rflow = 0;                    // 1 = étape rival de l'intro (-> nom)
     int ipgfx = 0;                          // gfx du héros/héroïne pour l'aperçu
     // ── créateur de perso (trainerkit) ──────────────────────────────
     TrainerKit ikit; bool ikit_init = false;
@@ -4509,7 +4532,31 @@ int main(int argc, char** argv) {
         for (int i = 0; i < (int)iskin_list.size(); i++)
             if (iskin_list[i] == world.skin) { iskin = i; break; }
         iskin_top = 0; iskin_zone = 0; iskin_pal = 0; iskin_edit = 0;
+        iskin_back = 0; iskin_rmode = 0;
+    };
+    auto iskin_build_rival = [&]() {        // rival : persos HD + Barry
+        iskin_list.clear(); iskin_secs.clear();
+        iskin_list.push_back(-1);           // -1 = Barry ROM (défaut)
+        for (int i = 0; i < world.skin_custom_count(); i++) {
+            int g = World::SKIN_BASE + i;
+            if (g == world.skin) continue;        // pas celui du joueur
+            if (!world.skin_front_tex(i)) continue; // face HD requise (combat)
+            iskin_list.push_back(g);
+        }
+        iskin_secs.push_back({0, (int)iskin_list.size()});
+        iskin = 0;
+        bool in = false;
+        for (int i = 0; i < (int)iskin_list.size(); i++)
+            if (iskin_list[i] == world.rskin) { iskin = i; in = true; break; }
+        if (!in) world.rskin = -1;          // sélection filtrée -> Barry
+        iskin_top = 0; iskin_zone = 0; iskin_pal = 0; iskin_edit = 0;
         iskin_back = 0;
+    };
+    auto irname_go = [&]() {                // skin rival choisie -> écran nom
+        iskin_rmode = 0; iskin_rflow = 0;
+        ist = I_NAME; iname_who = 1;
+        strcpy(iname, world.rival_name().c_str());
+        iset_msg(28); ichars = 0;
     };
     // ── créateur modulaire (trainerkit) ────────────────────────────
     auto ik_gender_ok = [&](int c, const std::string& nm) {
@@ -4584,7 +4631,8 @@ int main(int argc, char** argv) {
                                bk.w, bk.h, 4, bk.px.data(), 0);
             }
         }
-        iskin_build();
+        if (iskin_rmode) iskin_build_rival();  // reste sur la grille rival
+        else iskin_build();
         for (int i = 0; i < world.skin_custom_count(); i++)
             if (world.skin_custom(i)->name == stem) {
                 int g = World::SKIN_BASE + i;
@@ -4605,9 +4653,12 @@ int main(int argc, char** argv) {
         case A_GENDER: ist = I_GENDER; igender = 0;
                        world.intro_set_frame(0);
                        iset_msg(21); break;
-        case A_RNAME:  ist = I_NAME; iname_who = 1;
-                       strcpy(iname, world.rival_name().c_str());
-                       iset_msg(28); break;
+        case A_RNAME:  ist = I_SKIN;            // skin du rival d'abord
+                       iskin_rmode = 1; iskin_rflow = 1;
+                       iskin_build_rival();
+                       iset_txt(tr("Choisis l'apparence de ton rival.",
+                                   "Choose your rival's look."));
+                       break;
         case A_DONE:   ist = I_FADE; it = 0; break;
         }
     };
@@ -4667,7 +4718,11 @@ int main(int argc, char** argv) {
                         if (!strcmp(argv[i], "--gender"))
                             igender = atoi(argv[i + 1]);
                     break;
-            case 8: ist = I_NAME; iname_who = 1; iset_msg(28); break;
+            case 8: ist = I_SKIN; iskin_rmode = 1; iskin_rflow = 1;
+                    iskin_build_rival();
+                    iset_txt(tr("Choisis l'apparence de ton rival.",
+                                "Choose your rival's look."));
+                    break;
             case 9: ipush({30}, A_DONE); break;
             case 10: ist = I_SKIN;
                      for (int i = 1; i + 1 < argc; i++)
@@ -4757,6 +4812,8 @@ int main(int argc, char** argv) {
             }
             if (!strcmp(argv[i], "--spec"))            // lieu spécial DS
                 world.set_special(atoi(argv[i + 1]));
+            if (!strcmp(argv[i], "--surf"))            // debug : spawn en surf
+                world.set_surf(true);
         }
 
     bool running = true;
@@ -4769,6 +4826,8 @@ int main(int argc, char** argv) {
     bool recording = false;
     int rec_n = 0;
     int talk_at = -1, walk_n = 0, walk_d = 0, walk_at = 20, xmenu_at = -1;
+    int bike_at = -1, bike_off = -1;                 // --bike [f_on[,f_off]]
+    int scr_at = -1;                                 // --scr N : lance le script N
     bool autobtl = false;                           // --autobtl : combat auto
     struct Walk { int n, d, at; };
     std::vector<Walk> walks;
@@ -4822,6 +4881,7 @@ int main(int argc, char** argv) {
     int party_sub = 0, party_ssel = 0, party_page = 0;  // sous-menu équipe + onglet résumé
     int sum_mvsel = 0;                                  // capacité sélectionnée (résumé)
     int party_move = -1;                 // déplacement : membre source (-1 off)
+    std::string party_err;               // erreur CS menu équipe (msg DS b.453)
     // sac DS : sous-états (curseur / menu actions / cible équipe / jeter / oui-non)
     int bag_sel = 0, bag_scroll = 0, bag_act = -1, bag_asel = 0;
     int bag_party = -1, bag_psel = 0, bag_toss = -1, bag_tossn = 1;
@@ -4868,6 +4928,14 @@ int main(int argc, char** argv) {
     };
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--autobtl")) autobtl = true;
+        if (!strcmp(argv[i], "--scr") && i + 1 < argc)  // debug : script id au départ
+            scr_at = atoi(argv[i + 1]);
+        if (!strcmp(argv[i], "--bike")) {           // test : vélo f_on[,f_off]
+            bike_at = 25; world.vm().bag_add(450, 1);
+            if (i + 1 < argc && isdigit(argv[i + 1][0])) {
+                int a = 0, b = 0;
+                if (sscanf(argv[i + 1], "%d,%d", &a, &b) == 2) { bike_at = a; bike_off = b; }
+            } }
         if (!strcmp(argv[i], "--talk"))
             talk_at = (i + 1 < argc && isdigit(argv[i + 1][0])) ? atoi(argv[i + 1]) : 6;
         if (!strcmp(argv[i], "--speed") && i + 1 < argc)   // test : dt simulé xN
@@ -4909,10 +4977,19 @@ int main(int argc, char** argv) {
                 for (int f = a; f <= b; f++) world.vm().set_flag(f, true);
             else world.vm().set_flag(atoi(argv[i + 1]), true);
         }
-        if (!strcmp(argv[i], "--addmon") && i + 1 < argc) { // test : espèce,nv[,mv]
+        if (!strcmp(argv[i], "--addmon") && i + 1 < argc) { // test : espèce,nv[,mv[:mv2..]]
             int sp, lv, mv = 0;
-            if (sscanf(argv[i + 1], "%d,%d,%d", &sp, &lv, &mv) >= 2)
-                world.debug_mon(sp, lv, mv);
+            if (sscanf(argv[i + 1], "%d,%d", &sp, &lv) >= 2) {
+                const char* m3 = strchr(argv[i + 1], ',');
+                m3 = m3 ? strchr(m3 + 1, ',') : nullptr;
+                if (m3) {                                   // attaques séparées par :
+                    int mvs[4] = {0}, nm = 0;
+                    for (char* t = strtok((char*)m3 + 1, ":");
+                         t && nm < 4; t = strtok(nullptr, ":"))
+                        mvs[nm++] = atoi(t);
+                    world.debug_mon_moves(sp, lv, mvs, nm);
+                } else world.debug_mon(sp, lv, mv);
+            }
         }
         if (!strcmp(argv[i], "--fol") && i + 1 < argc)  // test : suiveur forcé
             { int fsp_ = 0, fvar_ = 0;
@@ -4930,7 +5007,7 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--debugbag")) {          // test : sac rempli
             static const int FILL[][2] = {
                 {4,12},{17,5},{19,3},{25,1},{27,2},{77,2},
-                {328,1},{337,1},{428,3},{445,1},{1,0}
+                {328,1},{337,1},{428,3},{445,1},{450,1},{1,0}
             };
             for (auto& f : FILL) if (f[1]) world.vm().bag_add(f[0], f[1]);
         }
@@ -5237,17 +5314,37 @@ int main(int argc, char** argv) {
                             else if (cd == 4002)
                                 iskin = (iskin + 1) % std::max(1, (int)iskin_list.size());
                             else if (cd == 4003) {        // VALIDER -> nommer
-                                world.skin = iskin_list[iskin];
-                                ist = I_NAME; iname_who = 0;
-                                strcpy(iname, ""); iset_msg(24); ichars = 0;
+                                if (iskin_rmode) {      // rival choisi
+                                    world.rskin = iskin_list[iskin];
+                                    if (iskin_rflow) irname_go();
+                                    else { iskin_rmode = 0; iskin_build(); }
+                                } else {
+                                    world.skin = iskin_list[iskin];
+                                    ist = I_NAME; iname_who = 0;
+                                    strcpy(iname, ""); iset_msg(24); ichars = 0;
+                                }
                             }
                             else if (cd == 4004) { iskin_edit = 0; iskin_zone = 0; }
-                            else if (cd == 4020) iskin_back ^= 1;   // DOS COMBAT
+                            else if (cd == 4020) iskin_back = (iskin_back == 1) ? 0 : 1;   // DOS COMBAT
+                            else if (cd == 4022) iskin_back = (iskin_back == 2) ? 0 : 2;   // FACE
+                            else if (cd == 4021 && !iskin_rflow) {  // RIVAL : bascule
+                                iskin_rmode ^= 1;
+                                if (iskin_rmode) iskin_build_rival();
+                                else iskin_build();
+                            }
                             else if (cd == 4010) ik_enter();   // CRÉER
                             else if (cd == 4011) {      // RETOUR -> genre
-                                world.skin = -1; ist = I_GENDER;
-                                iset_msg(21); iyn = 0;
+                                if (iskin_rmode) {
+                                    world.rskin = iskin_list[iskin];
+                                    if (iskin_rflow) irname_go();
+                                    else { iskin_rmode = 0; iskin_build(); }
+                                } else {
+                                    world.skin = -1; ist = I_GENDER;
+                                    iset_msg(21); iyn = 0;
+                                }
                             }
+                            if (iskin_rmode && cd >= 4001 && cd <= 4002)
+                                world.rskin = iskin_list[iskin];
                         } else if (cd >= 3000) {          // slot de palette
                             int i = cd - 3000;
                             if (!i) world.skin_mask = 0xFFFFFFFFu;
@@ -5257,10 +5354,11 @@ int main(int argc, char** argv) {
                         } else if (cd >= 2000) {          // piste slider
                             iskin_zone = 2 + (cd - 2000);
                         } else {          // cellule vitrine -> sélection,
-                            if (cd == iskin) {          // re-clic -> couleurs
+                            if (cd == iskin && !iskin_rmode) {  // re-clic -> couleurs
                                 iskin_edit = 1; iskin_zone = 0;
                             }
                             iskin = cd;
+                            if (iskin_rmode) world.rskin = iskin_list[iskin];
                         }
                         break;
                     }
@@ -5618,11 +5716,24 @@ int main(int argc, char** argv) {
                                                  row * scols(ns) +
                                                  std::min(col, scols(ns) - 1));
                             }
-                            if (kE) { iskin_edit = 1; iskin_zone = 0; }
+                            if (iskin_rmode) world.rskin = iskin_list[iskin];
+                            if (kE) {
+                                if (iskin_rmode) {      // rival choisi
+                                    world.rskin = iskin_list[iskin];
+                                    if (iskin_rflow) irname_go();
+                                    else { iskin_rmode = 0; iskin_build(); }
+                                } else { iskin_edit = 1; iskin_zone = 0; }
+                            }
                             if (k == SDLK_C) ik_enter();   // C = créateur
                             if (kQ) {                 // retour -> genre
-                                world.skin = -1; ist = I_GENDER;
-                                iset_msg(21); iyn = 0;
+                                if (iskin_rmode) {
+                                    world.rskin = iskin_list[iskin];
+                                    if (iskin_rflow) irname_go();
+                                    else { iskin_rmode = 0; iskin_build(); }
+                                } else {
+                                    world.skin = -1; ist = I_GENDER;
+                                    iset_msg(21); iyn = 0;
+                                }
                             }
                         }
                     }
@@ -5711,8 +5822,9 @@ int main(int argc, char** argv) {
                             if (snd.ok()) snd.se(1501);  // SEQ_SE_DP_DECIDE
                             world.menu_pick(it3[menu_msel].first);
                         }
-                    } else if (!ImGui::GetIO().WantCaptureKeyboard)
-                        world.action();
+                    } else if (ui_st == UI_NONE &&
+                               !ImGui::GetIO().WantCaptureKeyboard)
+                        world.action();             // menus : A reste dans l'UI
                 }
                 // menu multi : curseur haut/bas (même chemin que les clics)
                 if (world.menu_open()) {
@@ -5850,6 +5962,17 @@ int main(int argc, char** argv) {
                                     note(tr("Le Repousse fait effet !",
                                             "The Repel took effect!"));
                                     bag_act = -1;
+                                } else if (fu == 5) {
+                                    // Bicyclette DS : objet clé, pas consommé.
+                                    // Ferme le sac sur montage/démontage
+                                    // (UseBicycleFromMenu), refuse à l'écran.
+                                    int r = world.use_bicycle();
+                                    if (r == 0 || r == 1) { bag_act = -1; ui_st = 0; }
+                                    else note(r == 3
+                                        ? tr("Impossible de descendre ici.",
+                                             "Can't get off the bike here.")
+                                        : tr("Impossible d'utiliser ça ici.",
+                                             "Can't use it here."));
                                 } else if (fu == 3) {
                                     // Cendresacrée : ranime tout le groupe
                                     int n = 0;
@@ -6173,8 +6296,8 @@ int main(int argc, char** argv) {
                         if (snd.ok()) snd.se(1500); }
                     world.ui_frozen = true;
                 } else if (ui_st == UI_PARTY) {
-                    // sous-menu DS : E sur un membre -> Résumé / Déplacer /
-                    // Objet / Quitter ; Déplacer = échange de position
+                    // sous-menu DS : E sur un membre -> Résumé / CS connues /
+                    // Déplacer / Objet / Quitter (GetContextMenuEntries DS)
                     int key = ev.key.key;
                     int np = (int)world.party().size();
                     bool up = key == SDLK_UP || key == SDLK_W,
@@ -6182,8 +6305,10 @@ int main(int argc, char** argv) {
                     bool ok = key == SDLK_E || key == SDLK_RETURN,
                          bk = key == SDLK_Q || key == SDLK_BACKSPACE ||
                               key == SDLK_X || key == SDLK_ESCAPE;
-                    static const int NOPTS = 4;
-                    if (party_move >= 0) {          // mode déplacement
+                    if (!party_err.empty()) {           // message d'erreur CS
+                        party_err.clear();
+                        if (snd.ok()) snd.se(1500);
+                    } else if (party_move >= 0) {          // mode déplacement
                         if (up || dn) {
                             menu_sel = np ? (menu_sel + (dn ? 1 : np - 1)) % np : 0;
                             if (snd.ok()) snd.se(1500);
@@ -6223,30 +6348,51 @@ int main(int argc, char** argv) {
                             party_sub = 0; sum_mvsel = 0;
                             if (snd.ok()) snd.se(1500); }
                     } else if (party_sub == 1) {    // menu contextuel
+                        // DS GetContextMenuEntries : Résumé + CS connues du
+                        // Pokémon (ordre des attaques) + Déplacer + Objet +
+                        // Quitter. >=100 : CS (fm-100, FieldMoveTasks DS).
+                        std::vector<int> opts = {0};
+                        if (menu_sel < np)
+                            for (int fm : world.party_field_moves(menu_sel))
+                                if (world.field_move_runnable(fm))
+                                    opts.push_back(100 + fm);
+                        opts.push_back(1); opts.push_back(2); opts.push_back(3);
+                        int n = (int)opts.size();
+                        if (party_ssel >= n) party_ssel = n - 1;
                         if (up || dn) {
-                            if (th_neo()) {   // ordre maquette
-                                static const int DP[4] = {0, 2, 1, 3};
-                                int pos = 0;
-                                while (pos < 4 && DP[pos] != party_ssel)
-                                    pos++;
-                                pos = (pos + (dn ? 1 : 3)) % 4;
-                                party_ssel = DP[pos];
-                            } else {
-                                party_ssel = (party_ssel +
-                                    (dn ? 1 : NOPTS - 1)) % NOPTS;
-                            }
+                            party_ssel = (party_ssel + (dn ? 1 : n - 1)) % n;
                             if (snd.ok()) snd.se(1500);
                         }
-                        if (ok) {
+                        if (ok && party_ssel >= 0 && party_ssel < n) {
                             if (snd.ok()) snd.se(1501);
-                            if (party_ssel == 0) {                   // résumé
-                                party_sub = 2; party_page = 0; }
-                            else if (party_ssel == 1) {              // déplacer
+                            int a = opts[party_ssel];
+                            if (a == 0) {                        // résumé
+                                party_sub = 2; party_page = 0;
+                            } else if (a == 1) {                   // déplacer
                                 party_move = menu_sel; party_sub = 0;
-                            } else if (party_ssel == 2) {            // objet -> sac
+                            } else if (a == 2) {                   // objet -> sac
                                 party_sub = 0; ui_st = UI_BAG;
                                 menu_sel = 0;
-                            } else party_sub = 0;                    // quitter
+                            } else if (a == 3) party_sub = 0;      // quitter
+                            else {                               // CS de terrain
+                                int fm = a - 100,
+                                    err = world.field_move_error(fm);
+                                if (getenv("FMDBG"))
+                                    printf("[fm] slot=%d fm=%d err=%d usable=%x\n",
+                                        menu_sel, fm, err,
+                                        world.usable_field_moves());
+                                if (err) {
+                                    // DS PartyMenu_SelectFieldMove : message
+                                    // d'erreur, le menu reste ouvert dessous.
+                                    party_err = world.fm_error_text(err);
+                                    party_sub = 0;
+                                } else {
+                                    // succès : fade-out menu -> script CS
+                                    party_sub = 0; ui_st = UI_NONE;
+                                    world.ui_frozen = false;
+                                    world.use_field_move(menu_sel, fm);
+                                }
+                            }
                         }
                         if (bk) { party_sub = 0; if (snd.ok()) snd.se(1500); }
                     } else {                        // liste : nav + ouverture
@@ -6646,6 +6792,13 @@ int main(int argc, char** argv) {
         bool shf = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT] ||
                    keys[kmsc(7)];
         world.run_held = g_opts.autorun ? !shf : shf;
+        // B en vélo = changement de vitesse (DS TryCyclingGearChange,
+        // pression pas maintien)
+        { static bool shf_prev = false;
+          if (shf && !shf_prev && world.biking() &&
+              ist == I_OFF && ui_st == UI_NONE)
+              world.bike_gear();
+          shf_prev = shf; }
         if (getenv("INPDBG") && frames % 30 == 0 && (ix || iz || !walks.empty()))
             printf("[main-inp] ix=%.0f iz=%.0f wck=%d upd=%d\n", ix, iz,
                 (int)ImGui::GetIO().WantCaptureKeyboard,
@@ -6713,6 +6866,20 @@ int main(int argc, char** argv) {
                 if (!balls.empty()) world.battle_throw(balls[0].first);
                 else world.battle_key('Q');
             } else world.battle_key('E');
+        }
+        if (scr_at >= 0 && frames == 25) {           // --scr : lance le script id
+            printf("[scr] start_script %d\n", scr_at);
+            world.start_script_dbg(scr_at); world.vm().step();
+        }
+        if (bike_at >= 0 && frames == bike_at) {     // --bike : use_bicycle DS
+            int r = world.use_bicycle();
+            printf("[bike] use=%d pstate=%d\n", r, world.pstate());
+            bike_at = -1;
+        }
+        if (bike_off >= 0 && frames == bike_off) {
+            int r = world.use_bicycle();
+            printf("[bike] off=%d pstate=%d\n", r, world.pstate());
+            bike_off = -1;
         }
         if (talk_at > 0 && frames >= 25 && frames % 20 == 5) {
             if (world.battle().active) world.battle_key('E'); // avance le combat
@@ -7835,7 +8002,9 @@ int main(int argc, char** argv) {
                 };
                 pop_bg();
                 pop_slabrib(bg, {io.x*0.5f, 74.f*u},
-                    tr("CHOISIS TON APPARENCE","PICK YOUR LOOK"),
+                    iskin_rmode
+                        ? tr("APPARENCE DU RIVAL","RIVAL'S LOOK")
+                        : tr("CHOISIS TON APPARENCE","PICK YOUR LOOK"),
                     pop_dela(44.f*u), pop_delapx(44.f*u), POP_INK, POP_PAP,
                     -2.f, u);
                 // ── panneau gauche : aperçu en grand ──
@@ -7847,8 +8016,9 @@ int main(int argc, char** argv) {
                         IM_COL32(20,20,20,22));
                     // chips : genre + dos combat (cliquable -> aperçu du dos)
                     pop_tchip(bg, {p0.x + 96.f*u, p0.y + 34.f*u},
-                        igender ? tr("FILLE","GIRL") : tr("GARÇON","BOY"),
-                        POP_TEAL, u);
+                        iskin_rmode ? tr("RIVAL","RIVAL")
+                            : (igender ? tr("FILLE","GIRL") : tr("GARÇON","BOY")),
+                        iskin_rmode ? POP_RED : POP_TEAL, u);
                     {
                         ImVec2 dc{p1.x - 128.f*u, p0.y + 34.f*u};
                         ImVec2 d0{dc.x - 92.f*u, dc.y - 24.f*u},
@@ -7858,6 +8028,24 @@ int main(int argc, char** argv) {
                             iskin_back ? POP_GOLD : (hov_r(d0,d1) ? POP_RED : POP_LIL),
                             u);
                         iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4020});
+                    }
+                    if (!iskin_rflow) {   // chip RIVAL : bascule la grille
+                        ImVec2 dc{p1.x - 128.f*u, p0.y + 86.f*u};
+                        ImVec2 d0{dc.x - 92.f*u, dc.y - 24.f*u},
+                               d1{dc.x + 92.f*u, dc.y + 24.f*u};
+                        pop_tchip(bg, dc, tr("RIVAL","RIVAL"),
+                            iskin_rmode ? POP_GOLD
+                                : (hov_r(d0,d1) ? POP_RED : POP_LIL), u);
+                        iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4021});
+                    }
+                    {   // chip FACE : bascule l'aperçu sur la face avant
+                        ImVec2 dc{p1.x - 128.f*u, p0.y + 138.f*u};
+                        ImVec2 d0{dc.x - 92.f*u, dc.y - 24.f*u},
+                               d1{dc.x + 92.f*u, dc.y + 24.f*u};
+                        pop_tchip(bg, dc, tr("FACE","FRONT"),
+                            iskin_back == 2 ? POP_GOLD
+                                : (hov_r(d0,d1) ? POP_RED : POP_LIL), u);
+                        iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4022});
                     }
                     // podium : ellipse papier + contour encre + ombre
                     ImVec2 pc{p0.x + (p1.x-p0.x)*0.5f, p1.y - 120.f*u};
@@ -7870,20 +8058,29 @@ int main(int argc, char** argv) {
                     int wf = WC[(int)(pt * 5.f) & 3];
                     float bob = -fabsf(sinf(pt * 8.f)) * 8.f*u;
                     if (iskin_back) {
-                        // aperçu du dos de combat 80x80 sur le podium
+                        // aperçu dos de combat (1) ou face avant (2) sur le podium
                         uint32_t tb = sel_g >= World::SKIN_BASE
-                            ? world.skin_back_tex(sel_g - World::SKIN_BASE)
-                            : world.trainer_back_tex(igender);
+                            ? (iskin_back == 2
+                                ? world.skin_front_tex(sel_g - World::SKIN_BASE)
+                                : world.skin_back_tex(sel_g - World::SKIN_BASE))
+                            : (iskin_rmode
+                                ? (iskin_back == 2
+                                    ? world.trainer_front_tex(63)   // Barry
+                                    : 0)
+                                : (iskin_back == 2 ? world.hero_front_tex(igender)
+                                    : world.hero_back_tex(igender)));
                         if (tb)
                             pop_sprite(bg, tb,
                                 {pc.x, pc.y - 170.f*u}, 300.f*u, 300.f*u, u);
                         else
                             pop_slabrib(bg, {pc.x, pc.y - 170.f*u},
-                                tr("PAS DE DOS","NO BACK"),
+                                iskin_back == 2 ? tr("PAS DE FACE","NO FRONT")
+                                    : tr("PAS DE DOS","NO BACK"),
                                 pop_fbk(), 26.f*u, POP_PAP, POP_RED, -2.f, u);
                     } else {
                         uint32_t t = world.sprite_frame_t(
-                            sel_g < 0 ? ipgfx : sel_g, wf, world.skin_hue,
+                            sel_g < 0 ? (iskin_rmode ? 150 : ipgfx) : sel_g,
+                            wf, world.skin_hue,
                             world.skin_sat, world.skin_val, world.skin_mask);
                         if (t)
                             pop_sprite(bg, t,
@@ -7912,7 +8109,8 @@ int main(int argc, char** argv) {
                     arw(p1.x - 76.f*u, false, 4002);
                     // plaque nominative en ruban encre
                     const char* nm = sel_g < 0
-                        ? (igender ? tr("AURORE","DAWN") : tr("LUCAS","LUCAS"))
+                        ? (iskin_rmode ? tr("RIVAL","RIVAL")
+                            : (igender ? tr("AURORE","DAWN") : tr("LUCAS","LUCAS")))
                         : world.gfx_name(sel_g);
                     pop_slabrib(bg, {pc.x, p1.y - 40.f*u}, nm,
                         pop_dela(38.f*u), pop_delapx(38.f*u),
@@ -8127,11 +8325,14 @@ int main(int argc, char** argv) {
                 // ── panneau gauche : la scène (.hero 330×414) ──
                 ui_panel_th(bg, mp(34, 30), mp(364, 444), 20.f * g_uds);
                 {   ImVec2 T = mp(54, 46);
-                    ds_text(bg, tr("APPARENCE","APPEARANCE"), T.x, T.y,
-                        6, fs(10.5f));
+                    ds_text(bg, iskin_rmode
+                            ? tr("RIVAL","RIVAL")
+                            : tr("APPARENCE","APPEARANCE"),
+                        T.x, T.y, 6, fs(10.5f));
                 }
-                tag(350, 42, igender ? tr("FILLE","GIRL") : tr("GARÇON","BOY"),
-                    ui_acc());
+                tag(350, 42, iskin_rmode ? tr("RIVAL","RIVAL")
+                        : (igender ? tr("FILLE","GIRL") : tr("GARÇON","BOY")),
+                    iskin_rmode ? IM_COL32(230, 80, 90, 255) : ui_acc());
                 {   // tag « DOS COMBAT » cliquable -> bascule l'aperçu du dos
                     const char* dlb = tr("DOS COMBAT","BATTLE BACK");
                     float dw = tw(dlb, 9.f) + 22.f;
@@ -8141,6 +8342,26 @@ int main(int argc, char** argv) {
                             : (hov_r(d0, d1) ? IM_COL32(230, 80, 90, 255)
                                 : IM_COL32(74, 200, 138, 255)));
                     iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4020});
+                }
+                if (!iskin_rflow) {   // tag « RIVAL » : bascule la grille
+                    const char* rlb = tr("RIVAL","RIVAL");
+                    float rw = tw(rlb, 9.f) + 22.f;
+                    ImVec2 d0 = mp(350 - rw, 90), d1 = mp(350, 90 + 17);
+                    tag(350, 90, rlb,
+                        iskin_rmode ? IM_COL32(240, 180, 40, 255)
+                            : (hov_r(d0, d1) ? IM_COL32(230, 80, 90, 255)
+                                : IM_COL32(74, 200, 138, 255)));
+                    iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4021});
+                }
+                {   // tag « FACE » : bascule l'aperçu sur la face avant
+                    const char* flb = tr("FACE","FRONT");
+                    float fw = tw(flb, 9.f) + 22.f;
+                    ImVec2 d0 = mp(350 - fw, 114), d1 = mp(350, 114 + 17);
+                    tag(350, 114, flb,
+                        iskin_back == 2 ? IM_COL32(240, 180, 40, 255)
+                            : (hov_r(d0, d1) ? IM_COL32(230, 80, 90, 255)
+                                : IM_COL32(74, 200, 138, 255)));
+                    iskin_rc.push_back({{d0.x,d0.y,d1.x,d1.y}, 4022});
                 }
                 {   // halo de podium : 3 ellipses concentriques dégradées
                     float pt = (float)ImGui::GetTime();
@@ -8156,21 +8377,31 @@ int main(int argc, char** argv) {
                     int wf = WC[(int)(pt * 5.f) & 3];
                     float bob = -fabsf(sinf(pt * 8.f)) * 5.f;
                     if (iskin_back) {
-                        // aperçu du dos de combat 80x80 dans la scène
+                        // aperçu dos de combat (1) ou face avant (2) dans la scène
                         uint32_t tb = sel_g >= World::SKIN_BASE
-                            ? world.skin_back_tex(sel_g - World::SKIN_BASE)
-                            : world.trainer_back_tex(igender);
+                            ? (iskin_back == 2
+                                ? world.skin_front_tex(sel_g - World::SKIN_BASE)
+                                : world.skin_back_tex(sel_g - World::SKIN_BASE))
+                            : (iskin_rmode
+                                ? (iskin_back == 2
+                                    ? world.trainer_front_tex(63)   // Barry
+                                    : 0)
+                                : (iskin_back == 2 ? world.hero_front_tex(igender)
+                                    : world.hero_back_tex(igender)));
                         if (tb)
-                            bg->AddImage((ImTextureID)(uintptr_t)tb,
-                                mp(94, 90), mp(304, 300));
+                            pop_sprite(bg, tb, mp(199, 195),
+                                210.f * g_uds, 210.f * g_uds, g_uds);
                         else {
-                            ImVec2 T = mp(199 - tw("pas de dos", 11.f)*0.5f, 190);
-                            ds_text(bg, tr("pas de dos","no back"),
+                            ImVec2 T = mp(199 - tw("pas de face", 11.f)*0.5f, 190);
+                            ds_text(bg, iskin_back == 2
+                                    ? tr("pas de face","no front")
+                                    : tr("pas de dos","no back"),
                                 T.x, T.y, 6, fs(11.f));
                         }
                     } else {
                         uint32_t t = world.sprite_frame_t(
-                            sel_g < 0 ? ipgfx : sel_g, wf, world.skin_hue,
+                            sel_g < 0 ? (iskin_rmode ? 150 : ipgfx) : sel_g,
+                            wf, world.skin_hue,
                             world.skin_sat, world.skin_val, world.skin_mask);
                         if (t)
                             bg->AddImage((ImTextureID)(uintptr_t)t,
@@ -8181,7 +8412,8 @@ int main(int argc, char** argv) {
                     bg->AddLine(mp(52, 396), mp(346, 396),
                         IM_COL32(38, 51, 80, 255), 1.f);
                     const char* nm = sel_g < 0
-                        ? (igender ? tr("AURORE","DAWN") : tr("LUCAS","LUCAS"))
+                        ? (iskin_rmode ? tr("RIVAL","RIVAL")
+                            : (igender ? tr("AURORE","DAWN") : tr("LUCAS","LUCAS")))
                         : world.gfx_name(sel_g);
                     bool hero = !sec_of(iskin);
                     ImVec2 T = mp(52, 406);
@@ -9660,6 +9892,9 @@ int main(int argc, char** argv) {
                             world.skin_hue, world.skin_sat,
                             world.skin_val, world.skin_mask);
                         if (pv) ic = pv;
+                    } else if (world.rskin >= World::SKIN_BASE) {
+                        uint32_t pv = world.sprite_preview(world.rskin);
+                        if (pv) ic = pv;
                     }
                     if (ic)
                         bg->AddImage((ImTextureID)(uintptr_t)ic,
@@ -9801,6 +10036,9 @@ int main(int argc, char** argv) {
                         uint32_t pv = world.sprite_preview_t(gfx,
                             world.skin_hue, world.skin_sat,
                             world.skin_val, world.skin_mask);
+                        if (pv) ic = pv;
+                    } else if (world.rskin >= World::SKIN_BASE) {
+                        uint32_t pv = world.sprite_preview(world.rskin);
                         if (pv) ic = pv;
                     }
                     if (ic && iw > 0)
@@ -10378,6 +10616,88 @@ int main(int argc, char** argv) {
             std::string nm = nl == std::string::npos ? ft : ft.substr(nl + 1);
             dt_text(dl, lb, 20.5f * 8, 1.5f * 8, 3);
             dt_text(dl, nm, 24.5f * 8, 3.1f * 8, 3);
+        }
+        // ── cut-in CS (HMCutIn_StartTask DS, ov6 hm_cut_in.c) ────────────
+        // bande blanche : ligne fine qui balaie de droite à gauche puis
+        // s'épaissit à ±40px ; sprite joueur au centre + sprite du Pokémon
+        // qui fuse de la droite jusqu'au centre (cri) puis ressort à gauche ;
+        // particules de vent défilant dans la bande. ~110 frames @60fps.
+        if (world.cutin_t() >= 0.f) {
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            int sw2, sh2;
+            SDL_GetWindowSize(win, &sw2, &sh2);
+            ds_board(sw2, sh2); g_udy = 0.f;          // canevas DS champ (haut)
+            float t = world.cutin_t();              // frames écoulées (60fps)
+            // ── géométrie de la bande (DS windowX1/Y1->X2/Y2) ──
+            float bx0 = 0.f, by0 = 96.f, bx1 = 256.f, by1 = 96.f;
+            if (t < 10.f) {                          // ligne fine -> pleine
+                bx0 = 254.f * (1.f - t / 10.f);      //  largeur (droite->gauche)
+                by0 = 95.f; by1 = 97.f;
+            } else if (t < 26.f) {                   // expansion verticale
+                float k = (t - 10.f) / 16.f;
+                float e = 1.f - (1.f - k) * (1.f - k);        // ease-out
+                float hh = 1.f + 39.f * e;
+                by0 = 96.f - hh; by1 = 96.f + hh;
+            } else if (t < 96.f) {                   // bande ouverte ±40
+                by0 = 56.f; by1 = 136.f;
+            } else {                                  // rétrécissement
+                float k = fminf((t - 96.f) / 16.f, 1.f);
+                float e = 1.f - (1.f - k) * (1.f - k);
+                float hh = 40.f * (1.f - e) + 1.f;
+                by0 = 96.f - hh; by1 = 96.f + hh;
+            }
+            ImVec2 b0 = dp(bx0, by0), b1 = dp(bx1, by1);
+            dl->PushClipRect(b0, b1, true);
+            dl->AddRectFilled(b0, b1, IM_COL32(255, 255, 255, 255));
+            // particules de vent DS : 13 trainées horizontales (cf. table
+            // sWindParticleAnimConfigs), vitesse -16/-24 px@30Hz -> px@60fps
+            static const float WP[13][2] = {
+                {15,63},{76,67},{128,61},{240,69},{40,78},{72,91},{208,86},
+                {56,116},{95,109},{159,100},{24,126},{140,125},{221,124}};
+            for (int i = 0; i < 13; i++) {
+                float spd = (i % 3 == 1) ? 12.f : 8.f;     // px/frame 60fps
+                float x = fmodf(WP[i][0] - t * spd, 288.f);
+                if (x < 0) x += 288.f;                      // boucle 0..288
+                float y = WP[i][1];
+                float w = 26.f + (i % 3) * 10.f;
+                if (y > by0 - 4 && y < by1 + 4 && x > bx0 - w && x < bx1)
+                    dl->AddRectFilled(dp(x, y), dp(x + w, y + 2.f),
+                        IM_COL32(180, 210, 235, 150));
+            }
+            // sprite joueur (dos « sort la CS ») : visible dès bande ouverte
+            if (t >= 26.f && t < 96.f) {
+                GLuint ptex = world.player_back_tex();
+                if (ptex) {
+                    float s = 80.f;                    // ~80px DS
+                    ImVec2 c = dp(128.f, 136.f);       // pieds au bas de bande
+                    dl->AddImage((ImTextureID)(intptr_t)ptex,
+                        {c.x - s*g_uds*0.5f, c.y - s*g_uds},
+                        {c.x + s*g_uds*0.5f, c.y});
+                }
+            }
+            // sprite du Pokémon : fuse de la droite, freine au centre (cri
+            // à l'arrivée, cf. SlideMonToCenter), ressort accélérant à gauche
+            if (t >= 46.f && t < 96.f && world.cutin_sp() > 0) {
+                float mx;
+                if (t < 50.f)      mx = 296.f - (t - 46.f) * 26.f; // arrivée
+                else if (t < 62.f) {                              // freinage exp
+                    float k = (t - 50.f) / 12.f;
+                    mx = 192.f - 64.f * (1.f - expf(-k * 2.6f));
+                } else if (t < 80.f) mx = 128.f;                  // pose
+                else {                                            // sortie
+                    float k = t - 80.f;
+                    mx = 128.f - k * k * 0.9f - k * 4.f;
+                }
+                GLuint mtex = world.poke_tex(world.cutin_sp(), 0);
+                if (mtex) {
+                    float s = 72.f;
+                    ImVec2 c = dp(mx, 132.f);
+                    dl->AddImage((ImTextureID)(intptr_t)mtex,
+                        {c.x - s*g_uds*0.5f, c.y - s*g_uds},
+                        {c.x + s*g_uds*0.5f, c.y});
+                }
+            }
+            dl->PopClipRect();
         }
         // upload Image -> texture GL filtrée NEAREST (sûr en drawlist ImGui)
         auto& spr_upload = ui_upload;
@@ -11147,14 +11467,27 @@ int main(int argc, char** argv) {
                     tp(24 + tx, 72), tp(104 + tx, 152));
                 if (bt.trainer && bt.foe_sprite >= 0) {
                     float fx = esl / uds + tr_out * 80.f;
-                    uint32_t tfr = world.trainer_front_tex(bt.foe_sprite);
-                    if (tfr) dl->AddImage((ImTextureID)(intptr_t)tfr,
-                        tp(152 + fx, 10), tp(232 + fx, 90));
+                    // sprite dresseur = sa classe (index trfgra) ; rival :
+                    // la FACE de la skin choisie, affichée plus grande
+                    bool rv = bt.foe_class == 63 &&
+                        world.rskin >= World::SKIN_BASE;
+                    uint32_t tfr = rv
+                        ? world.skin_front_tex(world.rskin - World::SKIN_BASE)
+                        : 0;
+                    if (!tfr) tfr = world.trainer_front_tex(bt.foe_class);
+                    if (tfr) {
+                        if (rv)
+                            dl->AddImage((ImTextureID)(intptr_t)tfr,
+                                tp(136 + fx, -24), tp(240 + fx, 96));
+                        else
+                            dl->AddImage((ImTextureID)(intptr_t)tfr,
+                                tp(152 + fx, 10), tp(232 + fx, 90));
+                    }
                 }
                 if (bt.trainer && bt.tid2 > 0 && bt.foe_sprite2 >= 0) {
                     // 2e dresseur (combat duo) : glisse avec le premier
                     float fx = esl / uds + tr_out * 80.f;
-                    uint32_t tfr2 = world.trainer_front_tex(bt.foe_sprite2);
+                    uint32_t tfr2 = world.trainer_front_tex(bt.foe_class2);
                     if (tfr2) dl->AddImage((ImTextureID)(intptr_t)tfr2,
                         tp(76 + fx, 10), tp(156 + fx, 90));
                 }
@@ -15012,10 +15345,11 @@ int main(int argc, char** argv) {
                 ImVec2 mp = ImGui::GetIO().MousePos;
                 bool clk = ImGui::IsMouseClicked(0);
                 if (th_pop()) {
-                // ── équipe POP SINNOH (maquette 09) : fond papier + trame,
-                //    6 colonnes de cartes ; la sélectionnée est rouge avec
-                //    un bord droit en diagonale ──
+                // ── équipe POP « cartes à collectionner » : ruban titre +
+                //    mascotte, 6 cartes inclinées façon TCG — bande couleur du
+                //    type, numéro creux, burst or + levée sur la sélection ──
                 float u = sh / 1080.f;
+                float tt = (float)ImGui::GetTime();
                 ImFont* fb = pop_fb(), *fk = pop_fbk();
                 static const char* TY[18] = {
                     "NORMAL", "COMBAT", "VOL", "POISON", "SOL",
@@ -15025,104 +15359,132 @@ int main(int argc, char** argv) {
                 dl->AddRectFilled({0, 0}, {sw, sh}, POP_PAP);
                 pop_halftone(dl, {0, 0}, {sw, sh}, 16.f * u, 1.8f * u,
                     IM_COL32(20, 20, 20, 26));
-                // compteur en haut à droite
+                // bandes diagonales du fond (coin haut droit)
+                {
+                    ImVec2 d1[4] = {{sw * 0.90f, 0}, {sw * 0.96f, 0},
+                                    {sw * 0.74f, sh}, {sw * 0.68f, sh}};
+                    bg->AddConvexPolyFilled(d1, 4, IM_COL32(229, 38, 47, 26));
+                    ImVec2 d2[4] = {{sw * 0.62f, 0}, {sw * 0.68f, 0},
+                                    {sw * 0.60f, sh}, {sw * 0.54f, sh}};
+                    bg->AddConvexPolyFilled(d2, 4, IM_COL32(255, 194, 26, 70));
+                }
+                // ── 6 cartes inclinées : rects de clic d'abord ──
+                float gx = 40.f * u, gap = 18.f * u;
+                float cw = (sw - gx * 2 - gap * 5) / 6.f;
+                float cy0 = 118.f * u, cy1 = sh - 118.f * u;
+                // ruban titre + mascotte + compteur
+                pop_slabrib(dl, {gx + 150.f * u, 54.f * u},
+                    tr("ÉQUIPE", "PARTY"), pop_dela(46.f * u),
+                    pop_delapx(46.f * u), POP_INK, POP_PAP, -2.f, u);
+                pop_pet(dl, world.poke_tex(479, 0, iconf),
+                    {gx + 335.f * u, 74.f * u}, 62.f * u, tt, 2.f, u);
                 {
                     char cn[32]; snprintf(cn, sizeof cn,
                         tr("%d POKEMON", "%d POKEMON"), np);
-                    pop_txt(dl, fk, 30.f * u,
-                        {sw - 40.f * u - pop_tw(fk, 30.f * u, cn),
-                         34.f * u}, POP_INK, cn);
+                    pop_slabrib(dl, {sw - 175.f * u, 54.f * u}, cn,
+                        fk, 30.f * u, POP_GOLD, POP_INK, 2.f, u);
                 }
-                // ── 6 colonnes de cartes ──
-                float gx = 40.f * u, gap = 18.f * u;
-                float cw = (sw - gx * 2 - gap * 5) / 6.f;
-                float cy0 = 96.f * u, cy1 = sh - 118.f * u;
+                for (int i = 0; i < 6 && i < np; i++) {
+                    ImVec2 r0{gx + i * (cw + gap), cy0};
+                    bool hov = mp.x >= r0.x && mp.x <= r0.x + cw &&
+                               mp.y >= r0.y && mp.y <= cy1;
+                    if (hov && msel_hover()) menu_sel = i;
+                    if (clk && hov) {
+                        if (i == menu_sel) push_key(SDLK_E);
+                        else menu_sel = i;
+                    }
+                }
+                // dessin en 2 passes : la carte choisie au-dessus des autres
+                for (int pass = 0; pass < 2; pass++)
                 for (int i = 0; i < 6; i++) {
+                    bool sel = i == menu_sel && i < np;
+                    if ((pass == 1) != sel) continue;
                     float cx = gx + i * (cw + gap);
-                    ImVec2 c0{cx, cy0}, c1{cx + cw, cy1};
-                    float ccx = (c0.x + c1.x) * 0.5f;
+                    float lift = sel ? -24.f * u : 0.f;
+                    ImVec2 d0{cx, cy0 + lift}, d1{cx + cw, cy1 + lift};
+                    ImVec2 dc{(d0.x + d1.x) * 0.5f, (d0.y + d1.y) * 0.5f};
+                    float tilt = sel ? 0.f : (i & 1 ? 1.6f : -1.6f);
+                    int mk = pop_rot_begin(dl);
                     if (i >= np) {           // slot vide : mascotte + « VIDE »
-                        pop_stk(dl, c0, c1, POP_PAP, 12.f * u, 4.f * u,
+                        pop_stk(dl, d0, d1, POP_PAP, 14.f * u, 4.f * u,
                             7.f * u);
                         if (GLuint rtx = world.poke_tex(479, 0, iconf))
                             dl->AddImage((ImTextureID)(intptr_t)rtx,
-                                {ccx - 85.f * u,
-                                 (c0.y + c1.y) * 0.5f - 145.f * u},
-                                {ccx + 85.f * u,
-                                 (c0.y + c1.y) * 0.5f + 25.f * u},
+                                {dc.x - 85.f * u,
+                                 (d0.y + d1.y) * 0.5f - 145.f * u},
+                                {dc.x + 85.f * u,
+                                 (d0.y + d1.y) * 0.5f + 25.f * u},
                                 ImVec2(0,0), ImVec2(1,1),
                                 IM_COL32(60, 60, 72, 46));
                         pop_txt(dl, fk, 30.f * u,
-                            {ccx - pop_tw(fk, 30.f * u, "VIDE") * 0.5f,
-                             (c0.y + c1.y) * 0.5f + 55.f * u},
+                            {dc.x - pop_tw(fk, 30.f * u, "VIDE") * 0.5f,
+                             (d0.y + d1.y) * 0.5f + 55.f * u},
                             IM_COL32(20, 20, 20, 90), "VIDE");
+                        pop_rot_end(dl, mk, dc, tilt);
                         continue;
                     }
                     auto& m = pty[i];
-                    bool sel = i == menu_sel;
                     bool ko = !m.egg && m.hp <= 0;
-                    bool hov = mp.x >= c0.x && mp.x <= c1.x &&
-                               mp.y >= c0.y && mp.y <= c1.y;
-                    if (clk && hov) {
-                        if (sel) push_key(SDLK_E);
-                        else menu_sel = i;
-                    }
-                    ImU32 on = sel ? POP_PAP : POP_INK;   // encre sur carte
-                    if (sel) {               // carte rouge, bord droit diagonal
-                        float sl = 20.f * u;
-                        ImVec2 q[4] = {{c0.x, c0.y}, {c1.x + sl, c0.y},
-                                       {c1.x + sl - 26.f * u, c1.y},
-                                       {c0.x, c1.y}};
-                        pop_poly(dl, q, 4, POP_RED, 5.f * u, 9.f * u,
-                            9.f * u);
-                    } else {
-                        pop_stk(dl, c0, c1, POP_PAP, 12.f * u, 4.f * u,
-                            7.f * u);
-                    }
-                    if (i == party_move)     // source « déplacer » : liséré or
-                        dl->AddRect({c0.x - 5.f * u, c0.y - 5.f * u},
-                            {c1.x + 5.f * u, c1.y + 5.f * u},
-                            POP_GOLD, 12.f * u, 0, 5.f * u);
-                    // numéro creux
+                    int t1 = -1, t2 = -1;
+                    if (!m.egg) battle_types(&db, m.species, &t1, &t2);
+                    ImU32 tcol = (t1 >= 0 && t1 < 18) ? neo_type(t1)
+                        : POP_LIL;
+                    // corps de la carte : sticker papier à contour couleur
+                    // du type (+ anneau or si sel)
+                    pop_stk(dl, d0, d1, POP_PAP, 14.f * u,
+                        sel ? 5.5f * u : 4.f * u, sel ? 11.f * u : 7.f * u);
+                    dl->AddRect(d0, d1, tcol, 14.f * u, 0, 4.5f * u);
+                    if (i == party_move)     // source « déplacer » : or pulsé
+                        dl->AddRect({d0.x - 5.f * u, d0.y - 5.f * u},
+                            {d1.x + 5.f * u, d1.y + 5.f * u}, POP_GOLD,
+                            16.f * u, 0,
+                            4.5f * u + 1.5f * u * sinf(tt * 6.f));
+                    // bande type skewée qui chevauche le haut + numéro creux
                     {
+                        float tbw = cw * 0.78f;
+                        ImVec2 ts[4] = {
+                            {dc.x - tbw * 0.5f + 8.f * u, d0.y - 12.f * u},
+                            {dc.x + tbw * 0.5f + 8.f * u, d0.y - 12.f * u},
+                            {dc.x + tbw * 0.5f - 8.f * u, d0.y + 28.f * u},
+                            {dc.x - tbw * 0.5f - 8.f * u, d0.y + 28.f * u}};
+                        pop_poly(dl, ts, 4, tcol, 4.f * u, 6.f * u, 6.f * u);
                         char nb2[8]; snprintf(nb2, sizeof nb2, "0%d", i + 1);
-                        ImFont* df = pop_dela(64.f * u);
-                        float px2 = pop_delapx(64.f * u);
+                        ImFont* df = pop_dela(38.f * u);
+                        float px2 = pop_delapx(38.f * u);
                         pop_txthollow(dl, df, px2,
-                            {ccx - pop_tw(df, px2, nb2) * 0.5f,
-                             c0.y + 26.f * u},
-                            sel ? POP_PAP : POP_INK,
-                            sel ? POP_RED : POP_PAP, nb2);
+                            {dc.x - pop_tw(df, px2, nb2) * 0.5f,
+                             d0.y - 5.f * u}, POP_WHT, tcol, nb2);
                     }
                     // sprite sticker centré
                     GLuint ic = world.mon_icon_tex(m.species,
                         sel ? iconf : 0);
-                    float spr = fminf(170.f * u, cw - 24.f * u);
+                    float spr = fminf(190.f * u, cw - 20.f * u);
                     if (ic)
-                        pop_sprite(dl, ic, {ccx, c0.y + 185.f * u},
+                        pop_sprite(dl, ic, {dc.x, d0.y + 225.f * u},
                             spr, spr, u);
-                    // nom + genre
+                    // nom sur ruban encre skewé + genre
                     std::string nm = world.mon_name(m);
                     for (auto& c : nm) c = (char)toupper((unsigned char)c);
-                    float npx = 28.f * u;
+                    float npx = 30.f * u;
                     float nw = pop_tw(fk, npx, nm);
-                    if (nw > cw - 16.f * u)
-                        npx *= (cw - 16.f * u) / nw, nw = cw - 16.f * u;
-                    float nyy = c0.y + 262.f * u;
-                    pop_txt(dl, fk, npx, {ccx - nw * 0.5f, nyy},
-                        ko ? IM_COL32(150, 150, 150, 255) : on, nm);
+                    if (nw > cw - 76.f * u)
+                        npx *= (cw - 76.f * u) / nw, nw = cw - 76.f * u;
+                    float nrib = d0.y + 355.f * u;
+                    pop_slabrib(dl, {dc.x, nrib}, nm, fk, npx,
+                        POP_INK, POP_PAP, -2.f, u);
                     BatMon gb; gb.species = m.species; gb.pid = m.pid;
                     int gdr = mon_gender(&db, gb);
                     if (gdr == 0 || gdr == 1)
-                        neo_gender(dl, {ccx + nw * 0.5f + 13.f * u,
-                            nyy + npx * 0.6f}, gdr != 0, 9.f * u);
+                        neo_gender(dl, {dc.x + nw * 0.5f + 50.f * u, nrib},
+                            gdr != 0, 11.f * u);
                     // niveau + statut
+                    float lvl = d0.y + 408.f * u;
                     {
                         char lv[16]; snprintf(lv, sizeof lv, "N.%d",
                             m.level);
                         float lw2 = pop_tw(fk, 26.f * u, lv);
                         pop_txt(dl, fk, 26.f * u,
-                            {ccx - lw2 * 0.5f, nyy + 44.f * u}, on, lv);
+                            {dc.x - lw2 * 0.5f, lvl}, POP_INK, lv);
                         if (m.cond) {
                             const char* st; ImU32 sc;
                             if (m.cond & 0x40)      { st = "PAR"; sc = POP_GOLD; }
@@ -15132,49 +15494,43 @@ int main(int argc, char** argv) {
                             else if (m.cond & 0x88) { st = "PSN"; sc = POP_LIL; }
                             else                    { st = "SOM"; sc =
                                 IM_COL32(140, 140, 140, 255); }
-                            pop_tchip(dl, {ccx + lw2 * 0.5f + 42.f * u,
-                                nyy + 57.f * u}, st, sc, u);
+                            pop_tchip(dl, {dc.x + lw2 * 0.5f + 42.f * u,
+                                lvl + 13.f * u}, st, sc, u);
                         }
                     }
-                    float cy = nyy + 92.f * u;
+                    float cy = lvl + 48.f * u;
                     if (m.egg) {
-                        pop_txt(dl, fb, 22.f * u,
-                            {ccx - pop_tw(fb, 22.f * u,
-                                tr("Oeuf mystere", "Mystery Egg")) * 0.5f,
-                             cy}, on, tr("Oeuf mystere", "Mystery Egg"));
+                        pop_tchip(dl, {dc.x, cy + 26.f * u},
+                            tr("OEUF MYSTÈRE", "MYSTERY EGG"), POP_LIL, u);
                     } else {
-                        // barre PV : piste papier + remplissage + valeur
+                        // barre PV épaisse façon sticker + valeur
                         int mx = world.mon_maxhp(m.species, m.level, m.ivs,
                             m.evs[0]);
                         float frac = mx ? (float)m.hp / mx : 0.f;
                         frac = fminf(1.f, fmaxf(0.f, frac));
-                        float bw = cw - 44.f * u, bx = ccx - bw * 0.5f;
-                        dl->AddRectFilled({bx, cy}, {bx + bw, cy + 14.f * u},
-                            POP_PAP2, 3.f * u);
-                        dl->AddRect({bx, cy}, {bx + bw, cy + 14.f * u},
-                            sel ? POP_PAP : POP_INK, 3.f * u, 0, 2.5f * u);
+                        float bw = cw - 46.f * u, bx = dc.x - bw * 0.5f;
+                        pop_stk(dl, {bx, cy}, {bx + bw, cy + 26.f * u},
+                            POP_PAP2, 8.f * u, 3.f * u, 4.f * u);
                         ImU32 hc = ko ? POP_RED
                             : frac > 0.5f ? POP_TEAL
                             : frac > 0.2f ? POP_GOLD : POP_RED;
                         if (frac > 0.f)
-                            dl->AddRectFilled({bx, cy},
-                                {bx + bw * frac, cy + 14.f * u}, hc,
-                                3.f * u);
+                            dl->AddRectFilled({bx + 3.f * u, cy + 3.f * u},
+                                {bx + 3.f * u + (bw - 6.f * u) * frac,
+                                 cy + 23.f * u}, hc, 6.f * u);
                         char pv[24]; snprintf(pv, sizeof pv,
                             ko ? "K.O." : "%d/%d", m.hp, mx);
                         float pw = pop_tw(fk, 24.f * u, pv);
                         pop_txt(dl, fk, 24.f * u,
-                            {ccx - pw * 0.5f, cy + 22.f * u},
-                            ko ? (sel ? POP_GOLD : POP_RED) : on, pv);
+                            {dc.x - pw * 0.5f, cy + 36.f * u},
+                            ko ? POP_RED : POP_INK, pv);
                         // chips de type
-                        int t1 = -1, t2 = -1;
-                        battle_types(&db, m.species, &t1, &t2);
-                        float tyy = cy + 66.f * u;
+                        float tyy = cy + 92.f * u;
                         float tw1 = t1 >= 0 && t1 < 18
                             ? pop_tw(fk, 18.f * u, TY[t1]) + 26.f * u : 0;
                         float tw2 = (t2 >= 0 && t2 < 18 && t2 != t1)
                             ? pop_tw(fk, 18.f * u, TY[t2]) + 26.f * u : 0;
-                        float tx = ccx - (tw1 + tw2 +
+                        float tx = dc.x - (tw1 + tw2 +
                             (tw1 && tw2 ? 8.f * u : 0)) * 0.5f;
                         auto tchip2 = [&](int t, float tw3) {
                             if (t < 0 || t >= 18 || !tw3) return;
@@ -15192,27 +15548,45 @@ int main(int argc, char** argv) {
                         if (t2 != t1) tchip2(t2, tw2);
                         // objet tenu (pas de donnée -> « — » comme maquette)
                         pop_txt(dl, fb, 24.f * u,
-                            {ccx - pop_tw(fb, 24.f * u, "-") * 0.5f,
-                             tyy + 52.f * u}, on, "-");
+                            {dc.x - pop_tw(fb, 24.f * u, "-") * 0.5f,
+                             tyy + 56.f * u}, POP_INK, "-");
+                        // filet encre au-dessus du bouton
+                        dl->AddLine({d0.x + 30.f * u, d1.y - 88.f * u},
+                            {d1.x - 30.f * u, d1.y - 88.f * u},
+                            IM_COL32(20, 20, 20, 60), 2.5f * u);
                     }
-                    // bouton « Résumé » en bas de carte
+                    // bouton « Résumé » en bas de carte (or sur la choisie)
                     {
-                        float bw2 = 120.f * u, bh2 = 42.f * u;
-                        ImVec2 b0{ccx - bw2 * 0.5f, c1.y - 62.f * u},
+                        float bw2 = 130.f * u, bh2 = 46.f * u;
+                        ImVec2 b0{dc.x - bw2 * 0.5f, d1.y - 66.f * u},
                                b1{b0.x + bw2, b0.y + bh2};
-                        pop_stk(dl, b0, b1, sel ? POP_PAP : POP_WHT,
-                            8.f * u, 3.5f * u, 4.f * u);
+                        pop_stk(dl, b0, b1, sel ? POP_GOLD : POP_WHT,
+                            10.f * u, 3.5f * u, 4.f * u);
                         const char* rs = tr("Resume", "Summary");
                         pop_txt(dl, fk, 20.f * u,
-                            {ccx - pop_tw(fk, 20.f * u, rs) * 0.5f,
+                            {dc.x - pop_tw(fk, 20.f * u, rs) * 0.5f,
                              b0.y + (bh2 - 20.f * u * 1.3f) * 0.5f},
                             POP_INK, rs);
                     }
+                    // tampon K.O. diagonal + voile assombri
+                    if (ko) {
+                        dl->AddRectFilled({d0.x + 4.f * u, d0.y + 4.f * u},
+                            {d1.x - 4.f * u, d1.y - 4.f * u},
+                            IM_COL32(20, 20, 24, 80), 14.f * u);
+                        pop_slabrib(dl, {dc.x, d0.y + 225.f * u}, "K.O.",
+                            pop_dela(58.f * u), pop_delapx(58.f * u),
+                            POP_RED, POP_WHT, -10.f, u);
+                    }
+                    pop_rot_end(dl, mk, dc, tilt);
                 }
                 if (!np)
                     pop_txt(dl, fk, 30.f * u,
                         {gx, cy0 + 20.f * u}, POP_INK,
                         tr("(equipe vide)", "(empty party)"));
+                if (!party_err.empty())             // erreur CS (msg DS)
+                    pop_slabrib(dl, {sw * 0.5f, sh - 120.f * u},
+                        party_err.c_str(), pop_dela(24.f * u),
+                        pop_delapx(24.f * u), POP_GOLD, POP_INK, -2.f, u);
                 // aide bas
                 if (party_move >= 0)
                     pop_hints(dl, {sw, sh},
@@ -15473,6 +15847,17 @@ int main(int argc, char** argv) {
                     neo_txt(dl, hb, h0.x + 22.f * u, h0.y + 10.f * u,
                         IM_COL32(44, 54, 76, 255), 13.5f * u);
                 }
+                if (!party_err.empty()) {           // erreur CS (msg DS)
+                    float hw = neo_tw(party_err, 13.5f * u) + 44.f * u;
+                    ImVec2 h0{(sw - hw) * 0.5f, p1.y + 16.f * u},
+                           h1{h0.x + hw, h0.y + 34.f * u};
+                    dl->AddRectFilled(h0, h1,
+                        IM_COL32(252, 253, 255, 240), 10.f * u);
+                    dl->AddRect(h0, h1, IM_COL32(178, 186, 198, 255),
+                        10.f * u, 0, 1.2f * u);
+                    neo_txt(dl, party_err, h0.x + 22.f * u, h0.y + 10.f * u,
+                        IM_COL32(200, 60, 60, 255), 13.5f * u);
+                }
                                 } else if (g_theme_eff) {
                 // ── équipe « Horizon » : liste à gauche, fiche à droite ──
                 auto& fl = *ImGui::GetIO().Fonts;
@@ -15663,6 +16048,10 @@ int main(int argc, char** argv) {
                         IM_COL32(67, 82, 122, 255),
                         g_opts.lang ? "E actions · up/down party · Q back"
                                     : "E actions · haut/bas equipe · Q retour");
+                    if (!party_err.empty())            // erreur CS (msg DS)
+                        dl->AddText(f, 11.f * g_uds,
+                            {p0.x + 20.f * g_uds, p1.y - 36.f * g_uds},
+                            IM_COL32(250, 110, 110, 255), party_err.c_str());
                 }
                 } else
                 for (int i = 0; i < np && i < 6; i++) {
@@ -15743,6 +16132,8 @@ int main(int argc, char** argv) {
                 dt_msgbox(dl, db, 0, 20, 25, 4);
                 if (!np)
                     dt_text(dl, tr("(equipe vide)", "(empty party)"), 12, 166, 0);
+                else if (!party_err.empty())
+                    dt_text(dl, party_err.c_str(), 12, 166, 0);  // erreur CS DS
                 else
                     dt_text(dl, party_move >= 0
                         ? tr("Déplacer vers quel emplacement ?",
@@ -15750,17 +16141,29 @@ int main(int argc, char** argv) {
                         : tr("Choisir un Pokémon.", "Choose a POKÉMON."),
                         12, 166, 0);
                 }
-                // ── sous-menu contextuel : Résumé/Déplacer/Objet/Quitter ──
+                // ── sous-menu contextuel : Résumé/CS/Déplacer/Objet/Quitter ──
                 if (np && (party_sub || party_move >= 0)) {
                     float u = g_uds;
                     ds_font_ready(db);
-                    const char* opts[4] = {tr("Résumé", "Summary"),
-                        tr("Déplacer", "Move"), tr("Objet", "Item"),
-                        tr("Quitter", "Cancel")};
+                    // DS GetContextMenuEntriesForPartyMon : Résumé + CS
+                    // connues du Pokémon (ordre attaques, noms d'attaques) +
+                    // Déplacer + Objet + Quitter. >=100 : CS fm-100.
+                    std::vector<std::pair<int, std::string>> copts;
+                    copts.push_back({0, tr("Résumé", "Summary")});
+                    if (party_sub == 1 && menu_sel < np)
+                        for (int fm : world.party_field_moves(menu_sel))
+                            if (world.field_move_runnable(fm))
+                                copts.push_back({100 + fm,
+                                    battle_move_name(&db,
+                                        world.field_move_id(fm))});
+                    copts.push_back({1, tr("Déplacer", "Move")});
+                    copts.push_back({2, tr("Objet", "Item")});
+                    copts.push_back({3, tr("Quitter", "Cancel")});
+                    const int cn = (int)copts.size();
                     if (!g_theme_eff && party_sub == 1) {
                         // DS : fenêtre standard à droite — intérieur tuiles
                         // (19, 23-2n) x 12 (sMemberMenuTemplates), curseur ▶
-                        int n = 4, ey0 = (23 - 2 * n) * 8;
+                        int n = cn, ey0 = (23 - 2 * n) * 8;
                         dt_stdframe(dl, db, 19, 23 - 2 * n, 12, 2 * n);
                         for (int o = 0; o < n; o++) {
                             float ey = (float)(ey0 + o * 16);
@@ -15773,7 +16176,8 @@ int main(int argc, char** argv) {
                                 dl->AddTriangleFilled(dp(156, ey + 3),
                                     dp(156, ey + 13), dp(162, ey + 8),
                                     IM_COL32(232, 40, 40, 255));
-                            dt_text(dl, opts[o], 166, ey + 1, 0);
+                            dt_text(dl, copts[o].second.c_str(),
+                                166, ey + 1, 0);
                         }
                     } else if (party_move >= 0) {
                         if (th_pop()) {
@@ -15796,17 +16200,14 @@ int main(int argc, char** argv) {
                         }
                     } else if (party_sub == 1 && th_pop()) {
                         // contexte POP : colonne de stickers à droite de
-                        // la carte sélectionnée (ordre maquette NÉO)
+                        // la carte sélectionnée (ordre DS : CS comprises)
                         float u2 = sh / 1080.f;
                         ImFont* fk2 = pop_fbk();
-                        const char* MO[4] = {opts[0], tr("Objet tenu",
-                            "Held item"), opts[1], opts[3]};
-                        static const int MS[4] = {0, 2, 1, 3};  // -> ssel
                         float mw2 = 0;
-                        for (int o = 0; o < 4; o++)
-                            mw2 = fmaxf(mw2, pop_tw(fk2, 26.f * u2, MO[o]));
+                        for (int o = 0; o < cn; o++)
+                            mw2 = fmaxf(mw2, pop_tw(fk2, 26.f * u2,
+                                copts[o].second.c_str()));
                         mw2 += 56.f * u2;
-                        float mh2 = 4 * 56.f * u2 + 3 * 10.f * u2;
                         // à droite de la carte sélectionnée si possible
                         float gx2 = 40.f * u2, gap2 = 18.f * u2;
                         float cw3 = (sw - gx2 * 2 - gap2 * 5) / 6.f;
@@ -15816,13 +16217,13 @@ int main(int argc, char** argv) {
                             mx2 = gx2 + menu_sel * (cw3 + gap2) - mw2
                                 - 30.f * u2;
                         float my2 = 140.f * u2;
-                        for (int o = 0; o < 4; o++) {
+                        for (int o = 0; o < cn; o++) {
                             ImVec2 o0{mx2, my2 + o * (56.f + 10.f) * u2},
                                    o1{o0.x + mw2, o0.y + 56.f * u2};
-                            bool cur = MS[o] == party_ssel;
+                            bool cur = o == party_ssel;
                             bool hov = mp.x >= o0.x && mp.x <= o1.x &&
                                        mp.y >= o0.y && mp.y <= o1.y;
-                            if (hov && msel_hover()) party_ssel = MS[o];
+                            if (hov && msel_hover()) party_ssel = o;
                             if (clk && hov) push_key(SDLK_E);
                             pop_stk(dl, o0, o1, POP_PAP, 10.f * u2,
                                 4.f * u2, 6.f * u2, cur);
@@ -15830,34 +16231,31 @@ int main(int argc, char** argv) {
                                 {o0.x + 28.f * u2,
                                  o0.y + (56.f * u2 - 26.f * u2 * 1.3f)
                                      * 0.5f},
-                                cur ? POP_PAP : POP_INK, MO[o]);
+                                cur ? POP_PAP : POP_INK,
+                                copts[o].second.c_str());
                         }
-                        (void)mh2;
                     } else if (party_sub == 1 && th_neo()) {
                         // contexte façon maquette : panneau flottant +
-                        // nom en mono + lignes .lic (ordre maquette)
-                        const char* MO[4] = {opts[0], tr("Objet tenu",
-                            "Held item"), opts[1], opts[3]};
-                        static const int MS[4] = {0, 2, 1, 3};  // -> ssel
+                        // nom en mono + lignes .lic (ordre DS : CS comprises)
                         ImVec2 s0 = dp(604, 88),
                                s1{dp(604, 0).x + 200.f * u,
-                                  s0.y + (30 + 4 * 34) * u};
+                                  s0.y + (30 + cn * 34) * u};
                         neo_panel(dl, s0, s1, 12.f * u);
                         neo_txt(dl, world.mon_name(world.party()[menu_sel]),
                             s0.x + 10.f * u, s0.y + 8.f * u,
                             IM_COL32(95, 114, 150, 255), 9.f * u);
-                        for (int o = 0; o < 4; o++) {
+                        for (int o = 0; o < cn; o++) {
                             ImVec2 o0{s0.x + 4.f * u,
                                 s0.y + (26 + o * 34) * u},
                                    o1{s1.x - 4.f * u, o0.y + 32.f * u};
-                            bool cur = MS[o] == party_ssel;
+                            bool cur = o == party_ssel;
                             bool hov = mp.x >= o0.x && mp.x <= o1.x &&
                                        mp.y >= o0.y && mp.y <= o1.y;
-                            if (hov && msel_hover()) party_ssel = MS[o];
+                            if (hov && msel_hover()) party_ssel = o;
                             if (clk && hov) push_key(SDLK_E);
                             neo_lic(dl, o0, o1, cur, 9.f * u);
-                            neo_txt(dl, MO[o], o0.x + 14.f * u,
-                                o0.y + 9.f * u,
+                            neo_txt(dl, copts[o].second.c_str(),
+                                o0.x + 14.f * u, o0.y + 9.f * u,
                                 cur ? IM_COL32(238, 241, 247, 255)
                                     : IM_COL32(200, 208, 226, 255),
                                 13.5f * u);
@@ -15865,14 +16263,14 @@ int main(int argc, char** argv) {
                     } else if (party_sub == 1) {
                         ImVec2 s0{dp(560, 0).x, dp(0, 60).y + menu_sel * 62.f * u},
                                s1{s0.x + 180.f * u, s0.y + 30.f * u};
-                        s1.y = s0.y + (4 * 34 + 16) * u;
+                        s1.y = s0.y + (cn * 34 + 16) * u;
                         ImFont* f3 = ImGui::GetIO().Fonts->Fonts.Size > 1
                             ? ImGui::GetIO().Fonts->Fonts[1]
                             : ImGui::GetIO().Fonts->Fonts[0];
                         ui_window_th(dl, s0, s1,
                             world.mon_name(world.party()[menu_sel]).c_str(),
                             f3, u);
-                        for (int o = 0; o < 4; o++) {
+                        for (int o = 0; o < cn; o++) {
                             ImVec2 o0{s0.x + 6.f * u,
                                 s0.y + (8 + o * 34) * u},
                                    o1{s1.x - 6.f * u, o0.y + 30.f * u};
@@ -15888,7 +16286,8 @@ int main(int argc, char** argv) {
                                     {o0.x + 2.5f * u, o1.y},
                                     ui_acc(), 2.f * u);
                             }
-                            ds_text(dl, opts[o], o0.x + 10.f * u,
+                            ds_text(dl, copts[o].second.c_str(),
+                                o0.x + 10.f * u,
                                 o0.y + 8.f * u, cur ? 4 : 5, 0.8f * u);
                         }
                     } else if (party_sub == 2 && !g_theme_eff) {
@@ -19890,121 +20289,126 @@ int main(int argc, char** argv) {
                 }
                 }
             } else if (ui_st == UI_CARD && th_pop()) {
-                // ── carte dresseur POP (pop_18) : bandeau encre, portrait
-                // sticker, stats alignées, rangée de badges, signature ──
+                // ── carte dresseur ULTRA POP : FACE HD géante sur soleil
+                // rayonné or, carte inclinée, chips de stats colorées,
+                // badges ronds, signature ──
                 float sw = (float)sw2, sh = (float)sh2;
                 float u = sh / 1080.f;
                 double tt = ImGui::GetTime();
                 auto bg = ImGui::GetBackgroundDrawList();
                 ImDrawList* dl = ImGui::GetForegroundDrawList();
                 bg->AddRectFilled({0,0}, {sw, sh}, POP_PAP);
-                pop_halftone(bg, {0,0}, {sw, sh}, 26.f*u, 1.6f*u,
-                    IM_COL32(20,20,20,14));
+                // bandes diagonales translucides derrière la carte
+                {
+                    ImVec2 d1[4] = {{sw*0.60f,0},{sw*0.80f,0},
+                                    {sw*0.58f,sh},{sw*0.38f,sh}};
+                    bg->AddConvexPolyFilled(d1, 4, IM_COL32(229,38,47,26));
+                    ImVec2 d2[4] = {{sw*0.84f,0},{sw*0.885f,0},
+                                    {sw*0.665f,sh},{sw*0.625f,sh}};
+                    bg->AddConvexPolyFilled(d2, 4, IM_COL32(255,194,26,70));
+                }
                 // rubans suspendus en haut (rouge + or)
                 for (int r = 0; r < 2; r++) {
                     float rx = sw * (r ? 0.55f : 0.49f);
-                    ImVec2 p0{rx, 0}, p1{rx + 16.f*u, sh * 0.09f};
-                    dl->AddRectFilled(p0, p1, r ? POP_GOLD : POP_RED,
-                        4.f*u, ImDrawFlags_RoundCornersBottom);
+                    dl->AddRectFilled({rx, 0}, {rx + 16.f*u, sh * 0.075f},
+                        r ? POP_GOLD : POP_RED, 4.f*u,
+                        ImDrawFlags_RoundCornersBottom);
                 }
-                // ── carte ─────────────────────────────────────────────
-                ImVec2 k0{sw * 0.10f, sh * 0.20f}, k1{sw * 0.90f, sh * 0.76f};
-                pop_stk(dl, k0, k1, POP_PAP, 6.f*u, 6.f*u, 10.f*u);
-                // bandeau encre
-                float hh = 96.f*u;
-                dl->PushClipRect(k0, k1, true);
-                dl->AddRectFilled(k0, {k1.x, k0.y + hh}, POP_INK);
+                // ── carte inclinée : tout le contenu tourne ensemble ──
+                ImVec2 k0{sw * 0.05f, sh * 0.16f}, k1{sw * 0.95f, sh * 0.72f};
+                ImVec2 kc{(k0.x + k1.x) * 0.5f, (k0.y + k1.y) * 0.5f};
+                int mk = pop_rot_begin(dl);
+                pop_stk(dl, k0, k1, POP_PAP, 8.f*u, 6.f*u, 12.f*u);
+                // soleil rayonné derrière le portrait
+                ImVec2 sc{k0.x + 340.f*u, (k0.y + k1.y) * 0.5f + 34.f*u};
+                float sr = 292.f*u;
+                dl->PushClipRect({sc.x - sr, sc.y - sr},
+                                 {sc.x + sr, sc.y + sr}, true);
+                dl->AddCircleFilled(sc, sr, POP_PAP2);
+                for (int i = 0; i < 12; i += 2) {
+                    float a0 = i * 0.5236f + 0.10f * (float)sin(tt * 0.4f),
+                          a1 = (i + 1) * 0.5236f + 0.10f * (float)sin(tt * 0.4f);
+                    ImVec2 tri[3] = {sc,
+                        {sc.x + cosf(a0)*sr*1.05f, sc.y + sinf(a0)*sr*1.05f},
+                        {sc.x + cosf(a1)*sr*1.05f, sc.y + sinf(a1)*sr*1.05f}};
+                    dl->AddConvexPolyFilled(tri, 3, POP_GOLD);
+                }
                 dl->PopClipRect();
-                ImFont* hf = pop_dela(40.f*u);
-                pop_txt(dl, hf, pop_delapx(40.f*u),
-                    {k0.x + 40.f*u, k0.y + (hh - pop_delapx(40.f*u))*0.5f
-                        - 4.f*u},
-                    POP_PAP, tr("CARTE DE DRESSEUR","TRAINER CARD"));
+                dl->AddCircle(sc, sr, POP_INK, 0, 5.f*u);
+                // portrait FACE HD, déborde sur le cercle (sticker pop)
                 {
-                    ImFont* sf2 = pop_fb();
-                    std::string of = tr("SINNOH · OFFICIEL",
-                                        "SINNOH · OFFICIAL");
-                    float ow = pop_tw(sf2, 22.f*u, of);
-                    pop_txt(dl, sf2, 22.f*u,
-                        {k1.x - 40.f*u - ow, k0.y + (hh - 22.f*u)*0.5f},
-                        POP_PAP, of);
+                    uint32_t ft = world.player_front_tex();
+                    if (!ft)
+                        ft = world.sprite_preview_t(
+                            std::max(0, world.skin), world.skin_hue,
+                            world.skin_sat, world.skin_val,
+                            world.skin_mask);
+                    float ih = 560.f*u;
+                    pop_sprite(dl, ft, {sc.x, sc.y + ih*0.06f}, ih, ih, u);
                 }
-                // ── portrait sticker ──────────────────────────────────
-                float bs = 240.f*u;
-                ImVec2 p0{k0.x + 40.f*u, k0.y + hh + 36.f*u},
-                       p1{p0.x + bs, p0.y + bs};
-                pop_stk(dl, p0, p1, POP_WHT, 10.f*u, 5.f*u, 7.f*u);
-                uint32_t ps = world.sprite_preview_t(
-                    std::max(0, world.skin), world.skin_hue,
-                    world.skin_sat, world.skin_val, world.skin_mask);
-                if (ps)
-                    dl->AddImage((ImTextureID)(uintptr_t)ps,
-                        {p0.x + 8.f*u, p0.y + 8.f*u},
-                        {p1.x - 8.f*u, p1.y - 8.f*u});
                 // pet au pied du portrait
                 pop_pet(dl, world.poke_tex(403, 0, ((int)(tt*4.f))&1),
-                    {p1.x + 20.f*u, p1.y + 6.f*u}, 52.f*u, tt, 2.2f, u);
-                // ── nom + stats ───────────────────────────────────────
-                float tx = p1.x + 44.f*u;
-                ImFont* nf = pop_dela(72.f*u);
-                pop_txt(dl, nf, pop_delapx(72.f*u),
-                    {tx, k0.y + hh + 30.f*u}, POP_INK,
-                    world.player_name());
+                    {sc.x + 210.f*u, sc.y + sr - 24.f*u}, 52.f*u, tt,
+                    2.2f, u);
+                // ── colonne droite : nom géant + chips ───────────────
+                float tx = k0.x + 660.f*u;
+                ImFont* nf = pop_dela(96.f*u);
+                pop_txt(dl, nf, pop_delapx(96.f*u),
+                    {tx, k0.y + 66.f*u}, POP_INK, world.player_name(),
+                    POP_GOLD, 6.f*u, 6.f*u);
                 unsigned idh = 2166136261u;
                 for (char c : std::string(world.player_name()))
                     idh = (idh ^ (unsigned char)c) * 16777619u;
-                ImFont* lf = pop_fb(); ImFont* vf = pop_fbk();
-                auto stat3 = [&](float y, const char* l1, const std::string& v1,
-                                 const char* l2, const std::string& v2,
-                                 const char* l3, const std::string& v3) {
-                    float x = tx;
-                    const char* ls[3] = {l1, l2, l3};
-                    const std::string* vs[3] = {&v1, &v2, &v3};
-                    for (int i = 0; i < 3; i++) {
-                        if (!ls[i]) break;
-                        pop_txt(dl, lf, 20.f*u, {x, y},
-                            IM_COL32(20,20,20,170), ls[i]);
-                        x += pop_tw(lf, 20.f*u, ls[i]) + 8.f*u;
-                        x += pop_txt(dl, vf, 26.f*u, {x, y - 4.f*u},
-                            POP_INK, *vs[i]) + 44.f*u;
-                    }
+                char idb[40];
+                snprintf(idb, sizeof idb, tr("ID N° %05u","ID No. %05u"),
+                    idh % 100000u);
+                ImFont* vf = pop_fbk(); ImFont* lf = pop_fb();
+                pop_txt(dl, vf, 26.f*u, {tx + 6.f*u, k0.y + 176.f*u},
+                    POP_RED, idb);
+                // chips de stats : sticker blanc + barre couleur à gauche
+                char mb[32];
+                if (world.money() >= 1000)
+                    snprintf(mb, sizeof mb, "%u %03u P",
+                        world.money() / 1000, world.money() % 1000);
+                else snprintf(mb, sizeof mb, "%u P", world.money());
+                char tb[32];
+                snprintf(tb, sizeof tb, "%d:%02d",
+                    (int)(world.vm().play_sec / 3600),
+                    (int)(world.vm().play_sec / 60) % 60);
+                char dx[32];
+                snprintf(dx, sizeof dx, tr("%d vus", "%d seen"),
+                    (int)world.vm().dex_seen.size());
+                auto chip = [&](float cx, float cy, const char* lb,
+                                const std::string& v, ImU32 acc) {
+                    ImVec2 c0{cx, cy}, c1{cx + 320.f*u, cy + 78.f*u};
+                    pop_stk(dl, c0, c1, POP_WHT, 16.f*u, 4.f*u, 6.f*u);
+                    dl->AddRectFilled({c0.x, c0.y},
+                        {c0.x + 12.f*u, c1.y}, acc, 16.f*u,
+                        ImDrawFlags_RoundCornersLeft);
+                    pop_txt(dl, lf, 18.f*u, {c0.x + 30.f*u, c0.y + 12.f*u},
+                        IM_COL32(20,20,20,150), lb);
+                    pop_txt(dl, vf, 30.f*u, {c0.x + 30.f*u, c0.y + 34.f*u},
+                        POP_INK, v);
                 };
-                {
-                    char idb[32]; snprintf(idb, sizeof idb, "%05u",
-                        idh % 100000u);
-                    char mb[32];
-                    if (world.money() >= 1000)
-                        snprintf(mb, sizeof mb, "%u %03u P",
-                            world.money() / 1000, world.money() % 1000);
-                    else snprintf(mb, sizeof mb, "%u P", world.money());
-                    char tb[32];
-                    snprintf(tb, sizeof tb, "%d:%02d",
-                        (int)(world.vm().play_sec / 3600),
-                        (int)(world.vm().play_sec / 60) % 60);
-                    char dx[32];
-                    snprintf(dx, sizeof dx, tr("%d vus", "%d seen"),
-                        (int)world.vm().dex_seen.size());
-                    stat3(k0.y + hh + 118.f*u,
-                        tr("N° ID","ID No."), idb,
-                        tr("ARGENT","MONEY"), mb,
-                        tr("TEMPS","TIME"), tb);
-                    stat3(k0.y + hh + 164.f*u,
-                        tr("POKÉDEX","POKÉDEX"), dx,
-                        tr("LIEU","PLACE"), world.label(),
-                        nullptr, "");
-                }
-                // ── badges : 8 cases, obtenus = or plein ──────────────
-                float by = k1.y - 150.f*u, bsz = 70.f*u, bgap = 14.f*u;
-                float bx = k0.x + 40.f*u;
+                float cy0 = k0.y + 236.f*u;
+                chip(tx,          cy0,          tr("ARGENT","MONEY"),
+                    mb, POP_GOLD);
+                chip(tx + 350.f*u, cy0,         tr("TEMPS","TIME"),
+                    tb, POP_RED);
+                chip(tx,          cy0 + 96.f*u, tr("POKÉDEX","POKÉDEX"),
+                    dx, POP_TEAL);
+                chip(tx + 350.f*u, cy0 + 96.f*u, tr("LIEU","PLACE"),
+                    world.label(), POP_LIL);
+                // ── badges : 8 jetons ronds, obtenus = or plein ──────
+                float by = cy0 + 212.f*u, bsz = 64.f*u, bgap = 13.f*u;
                 for (int b = 0; b < 8; b++) {
-                    ImVec2 s0{bx + b * (bsz + bgap), by},
+                    ImVec2 s0{tx + b * (bsz + bgap), by},
                            s1{s0.x + bsz, s0.y + bsz};
                     bool got = world.badges() & (1 << b);
                     pop_stk(dl, s0, s1, got ? POP_GOLD : POP_PAP2,
-                        12.f*u, 4.f*u, got ? 5.f*u : 3.f*u);
-                    // glyphe par badge (formes façon maquette)
+                        bsz * 0.5f, 4.f*u, got ? 5.f*u : 3.f*u);
                     ImVec2 gc{(s0.x + s1.x)*0.5f, (s0.y + s1.y)*0.5f};
-                    float gr = bsz * 0.26f;
+                    float gr = bsz * 0.24f;
                     ImU32 gc2 = got ? POP_INK : IM_COL32(20,20,20,70);
                     switch (b) {
                     case 0: {                           // hexagone
@@ -20056,24 +20460,36 @@ int main(int argc, char** argv) {
                 }
                 // signature
                 {
-                    ImFont* sg = pop_dela(30.f*u);
+                    ImFont* sg = pop_dela(32.f*u);
                     std::string sn = "– " + world.player_name();
-                    float swd = pop_tw(sg, pop_delapx(30.f*u), sn);
-                    int mk = pop_rot_begin(dl);
-                    pop_txt(dl, sg, pop_delapx(30.f*u),
-                        {k1.x - 60.f*u - swd, by + bsz*0.5f - 15.f*u},
-                        POP_RED, sn);
-                    pop_rot_end(dl, mk,
-                        {k1.x - 60.f*u - swd*0.5f, by + bsz*0.5f}, -4.f);
+                    float swd = pop_tw(sg, pop_delapx(32.f*u), sn);
+                    pop_txt(dl, sg, pop_delapx(32.f*u),
+                        {k1.x - 56.f*u - swd, k1.y - 62.f*u}, POP_RED, sn);
+                }
+                pop_rot_end(dl, mk, kc, -1.5f);
+                // ── titre : ruban encre géant qui chevauche la carte ──
+                {
+                    ImFont* hf = pop_dela(58.f*u);
+                    std::string ttl = tr("CARTE DE DRESSEUR",
+                                         "TRAINER CARD");
+                    pop_slabrib(dl, {k0.x + 430.f*u, k0.y + 6.f*u}, ttl, hf,
+                        pop_delapx(58.f*u), POP_INK, POP_PAP, -2.5f, u);
+                    ImFont* sf2 = pop_fb();
+                    std::string of = tr("SINNOH · OFFICIEL",
+                                        "SINNOH · OFFICIAL");
+                    pop_txt(dl, sf2, 20.f*u,
+                        {k1.x - 44.f*u - pop_tw(sf2, 20.f*u, of),
+                         k0.y + 26.f*u}, POP_RED, of);
                 }
                 // ── RETOUR ────────────────────────────────────────────
                 {
                     ImFont* bf = pop_dela(34.f*u);
-                    ImVec2 bc{sw * 0.5f, k1.y + 70.f*u};
+                    ImVec2 bc{sw * 0.5f, k1.y + 86.f*u};
                     pop_slabrib(dl, bc, tr("RETOUR","BACK"), bf,
                         pop_delapx(34.f*u), POP_RED, POP_PAP, -2.f, u);
                     pop_pet(dl, world.poke_tex(396, 0, ((int)(tt*4.f))&1),
-                        {bc.x - 120.f*u, bc.y - 24.f*u}, 46.f*u, tt, 1.1f, u);
+                        {bc.x - 130.f*u, bc.y - 24.f*u}, 46.f*u, tt,
+                        1.1f, u);
                 }
             } else if (ui_st == UI_CARD && g_theme_eff) {
                 // ── carte dresseur façon maquette : panneau + bandeau rouge ──

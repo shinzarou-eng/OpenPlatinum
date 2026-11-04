@@ -131,6 +131,7 @@ namespace rnd {
     void set_glow(float k);                 // boost HDR des matériaux `glow`
     void set_water(float t, float day);     // horloge+lumière eau (monde)
     void set_post(const PostFx* p);         // uniforms cinéma de la frame
+    void set_dark(float ux, float uy, float k, float r); // halo grotte sombre
     void set_aniso(int level);              // 0 = off, 2/4/8/16 = anisotropie
     void resize(int w, int h);              // recrée le FBO MSAA à la taille fenêtre
     void resolve();                         // blit MSAA -> framebuffer écran (avant ImGui)
