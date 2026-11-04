@@ -168,7 +168,7 @@
     {0x00A7,"DisplayDressedPokemon","hh"},
     {0x00A8,"DisplayContestPokemon","hh"},
     {0x00A9,"OpenBallCapsule",""},
-    {0x00AA,"OpenSinnohMaps",""},
+    {0x00AA,"OpenRegionMap",""},
     {0x00AB,"OpenPcFunction","b"},
     {0x00AC,"DrawUnion",""},
     {0x00AD,"TrainerCaseUnion",""},

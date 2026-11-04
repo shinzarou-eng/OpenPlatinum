@@ -714,7 +714,7 @@ void World::_dw_obj_del(int local_id) {
         }
 }
 
-// sBoulderFallLocations DS (FALLS OpenSinnoh) : tuiles partagées ->
+// sBoulderFallLocations DS (table FALLS) : tuiles partagées ->
 // type de chute. pit -2 = trou B5F->B6F, -1 = mauvais puits, 6/7/8 =
 // puits corrects (flag DIST_WORLD_PUZZLE_FLAG_*_IN_B6F_PIT).
 int World::_dw_fall_at(int stx, int stz, int* pit) const {
@@ -737,7 +737,7 @@ int World::_dw_fall_at(int stx, int stz, int* pit) const {
     return 0;
 }
 
-// BOULDERS OpenSinnoh par localId : bits puzzle (sur B5F / dehors B6F),
+// BOULDERS par localId : bits puzzle (sur B5F / dehors B6F),
 // objet puits, bit gardien-en-B6F, script gardien (1-indexé :
 // ScriptEntry 4/5/6 -> 5/7/6).
 struct DwBoulder { int b5f, outside, pit_obj, guard, scr; };
